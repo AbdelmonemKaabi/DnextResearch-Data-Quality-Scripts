@@ -1,0 +1,13 @@
+# Dataset(s) a comparer (valeurs de la colonne "DataSource" cote Clustered).
+# Utilise seulement si aucun argument n'est passe en ligne de commande
+# (python compare_aggregated_sources.py <dataset> [<dataset2> ...] ou 'all').
+#
+# Un seul dataset :
+# datasets: dnexr-all-che-tf-customs-bilateral-monthly
+#
+# Plusieurs datasets :
+datasets:
+  - dnexr-all-che-tf-customs-bilateral-monthly
+
+# Tous les datasets presents dans Clustered :
+# datasets: all

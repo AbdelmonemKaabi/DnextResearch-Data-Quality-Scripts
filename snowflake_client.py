@@ -60,13 +60,17 @@ def get_connection(path: str = CRED_FILE) -> snowflake.connector.SnowflakeConnec
         ) from exc
 
 
-def run_query(sql: str, path: str = CRED_FILE):
-    """Exécute `sql` sur Snowflake et retourne le résultat sous forme de pandas DataFrame."""
+def run_query(sql: str, params: dict | None = None, path: str = CRED_FILE):
+    """Exécute `sql` sur Snowflake et retourne le résultat sous forme de pandas DataFrame.
+
+    `params` : valeurs liées optionnelles (paramstyle pyformat, ex: %(nom)s dans `sql`), pour
+    éviter d'interpoler des valeurs directement dans le texte SQL.
+    """
     conn = get_connection(path)
     try:
         cur = conn.cursor()
         try:
-            cur.execute(sql)
+            cur.execute(sql, params)
             return cur.fetch_pandas_all()
         finally:
             cur.close()
