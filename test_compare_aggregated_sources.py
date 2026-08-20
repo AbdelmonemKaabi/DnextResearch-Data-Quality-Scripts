@@ -19,7 +19,12 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from compare_aggregated_sources import GROUP_KEYS, _aggregate_snowflake, compare_aggregated
+from compare_aggregated_sources import (
+    GROUP_KEYS,
+    _aggregate_snowflake,
+    _find_unrecognized_units,
+    compare_aggregated,
+)
 from exchange_rate import get_mop_to_usd_rate
 
 MONTH = pd.Timestamp("2026-01-01")
@@ -192,6 +197,221 @@ def test_quantity_zero_dun_seul_cote_reste_non_comparable() -> None:
     print("OK  test_quantity_zero_dun_seul_cote_reste_non_comparable")
 
 
+def test_poids_lb_fusionne_avec_kg() -> None:
+    """LB doit fusionner avec KG (meme famille poids) : le groupe final doit sommer les deux
+    quantites converties en KG, pas rester separe.
+    """
+    df_snowflake = pd.DataFrame(
+        [
+            _row(hs_chapter="13", currency="USD", total_value=500.0, number_of_records=2,
+                 quantity_unit="LB", total_quantity=10.0),
+            _row(hs_chapter="13", currency="USD", total_value=500.0, number_of_records=2,
+                 quantity_unit="KG", total_quantity=20.0),
+        ]
+    )
+    df_clustered = pd.DataFrame(
+        [_clustered_row(hs_chapter="13", total_value=1000.0, number_of_records=4,
+                         quantity_unit="KG", total_quantity=20.0 + 10.0 * 0.45359237)]
+    )
+
+    result = compare_aggregated(df_snowflake, df_clustered)
+    assert len(result) == 1, f"Attendu 1 seul groupe (LB fusionne avec KG), obtenu {len(result)}"
+    row = result.iloc[0]
+
+    assert row["Quantity Unit"] == "KG", f"Attendu unite canonique KG, obtenu {row['Quantity Unit']!r}"
+    expected_qty = 20.0 + 10.0 * 0.45359237
+    assert abs(row["total_quantity_snowflake"] - expected_qty) < 1e-6, (
+        f"Attendu {expected_qty} (10 LB converties + 20 KG), obtenu {row['total_quantity_snowflake']}"
+    )
+    assert row["status_quantity"] == "MATCH", (
+        f"Attendu MATCH, obtenu status={row['status_quantity']!r} reason={row['reason_quantity']!r}"
+    )
+    print("OK  test_poids_lb_fusionne_avec_kg")
+
+
+def test_volume_ml_fusionne_avec_l() -> None:
+    """ML doit fusionner avec L (meme famille volume), independamment de la famille poids."""
+    df_snowflake = pd.DataFrame(
+        [_row(hs_chapter="14", currency="USD", total_value=200.0, number_of_records=1,
+              quantity_unit="ML", total_quantity=5000.0)]
+    )
+    df_clustered = pd.DataFrame(
+        [_clustered_row(hs_chapter="14", total_value=200.0, number_of_records=1,
+                         quantity_unit="L", total_quantity=5.0)]
+    )
+
+    result = compare_aggregated(df_snowflake, df_clustered)
+    assert len(result) == 1, f"Attendu 1 seul groupe (ML fusionne avec L), obtenu {len(result)}"
+    row = result.iloc[0]
+
+    assert row["Quantity Unit"] == "L", f"Attendu unite canonique L, obtenu {row['Quantity Unit']!r}"
+    assert row["status_quantity"] == "MATCH", (
+        f"Attendu MATCH (5000 ML = 5 L), obtenu status={row['status_quantity']!r} reason={row['reason_quantity']!r}"
+    )
+    print("OK  test_volume_ml_fusionne_avec_l")
+
+
+def test_surface_reste_separee_du_poids() -> None:
+    """M2 (surface) et KG (poids) sont deux grandeurs physiques differentes : elles ne doivent
+    jamais fusionner, meme au sein du meme groupe (Month/Direction/HS Chapter).
+    """
+    df_snowflake = pd.DataFrame(
+        [
+            _row(hs_chapter="15", currency="USD", total_value=300.0, number_of_records=1,
+                 quantity_unit="M2", total_quantity=50.0),
+            _row(hs_chapter="15", currency="USD", total_value=400.0, number_of_records=1,
+                 quantity_unit="KG", total_quantity=60.0),
+        ]
+    )
+    df_clustered = pd.DataFrame(
+        [
+            _clustered_row(hs_chapter="15", total_value=300.0, number_of_records=1,
+                            quantity_unit="M2", total_quantity=50.0),
+            _clustered_row(hs_chapter="15", total_value=400.0, number_of_records=1,
+                            quantity_unit="KG", total_quantity=60.0),
+        ]
+    )
+
+    result = compare_aggregated(df_snowflake, df_clustered)
+    assert len(result) == 2, f"Attendu 2 groupes distincts (M2 et KG ne fusionnent pas), obtenu {len(result)}"
+    assert set(result["Quantity Unit"]) == {"M2", "KG"}, (
+        f"Attendu les unites M2 et KG separees, obtenu {set(result['Quantity Unit'])}"
+    )
+    print("OK  test_surface_reste_separee_du_poids")
+
+
+def test_unite_inconnue_reste_isolee() -> None:
+    """Une unite hors de toutes les familles connues (ex: PIECE) reste dans son propre groupe,
+    sans etre fusionnee ni avec le poids ni avec une autre unite de comptage.
+    """
+    df_snowflake = pd.DataFrame(
+        [
+            _row(hs_chapter="16", currency="USD", total_value=100.0, number_of_records=1,
+                 quantity_unit="PIECE", total_quantity=7.0),
+            _row(hs_chapter="16", currency="USD", total_value=200.0, number_of_records=1,
+                 quantity_unit="UNIT", total_quantity=9.0),
+        ]
+    )
+    df_clustered = pd.DataFrame(
+        [
+            _clustered_row(hs_chapter="16", total_value=100.0, number_of_records=1,
+                            quantity_unit="PIECE", total_quantity=7.0),
+            _clustered_row(hs_chapter="16", total_value=200.0, number_of_records=1,
+                            quantity_unit="UNIT", total_quantity=9.0),
+        ]
+    )
+
+    result = compare_aggregated(df_snowflake, df_clustered)
+    assert len(result) == 2, f"Attendu 2 groupes distincts (PIECE et UNIT non fusionnes), obtenu {len(result)}"
+    assert set(result["Quantity Unit"]) == {"PIECE", "UNIT"}, (
+        f"Attendu les unites PIECE et UNIT separees, obtenu {set(result['Quantity Unit'])}"
+    )
+    print("OK  test_unite_inconnue_reste_isolee")
+
+
+def test_nouvelles_unites_poids_volume_longueur_fusionnent() -> None:
+    """GRAM fusionne avec KG (poids), M3/CUFT fusionnent avec L (volume), INCH fusionne avec M
+    (longueur) -- verifie les facteurs de conversion ajoutes pour les codes reels decouverts.
+    """
+    df_snowflake = pd.DataFrame(
+        [
+            _row(hs_chapter="17", currency="USD", total_value=100.0, number_of_records=1,
+                 quantity_unit="GRAM", total_quantity=2000.0),
+            _row(hs_chapter="18", currency="USD", total_value=100.0, number_of_records=1,
+                 quantity_unit="M3", total_quantity=2.0),
+            _row(hs_chapter="19", currency="USD", total_value=100.0, number_of_records=1,
+                 quantity_unit="INCH", total_quantity=100.0),
+        ]
+    )
+    df_clustered = pd.DataFrame(
+        [
+            _clustered_row(hs_chapter="17", total_value=100.0, number_of_records=1,
+                            quantity_unit="KG", total_quantity=2.0),
+            _clustered_row(hs_chapter="18", total_value=100.0, number_of_records=1,
+                            quantity_unit="L", total_quantity=2000.0),
+            _clustered_row(hs_chapter="19", total_value=100.0, number_of_records=1,
+                            quantity_unit="M", total_quantity=100.0 * 0.0254),
+        ]
+    )
+
+    result = compare_aggregated(df_snowflake, df_clustered)
+
+    gram_row = result[result["HS Chapter"] == "17"].iloc[0]
+    assert gram_row["Quantity Unit"] == "KG" and gram_row["status_quantity"] == "MATCH", (
+        f"GRAM->KG : attendu MATCH, obtenu status={gram_row['status_quantity']!r} "
+        f"reason={gram_row['reason_quantity']!r}"
+    )
+
+    m3_row = result[result["HS Chapter"] == "18"].iloc[0]
+    assert m3_row["Quantity Unit"] == "L" and m3_row["status_quantity"] == "MATCH", (
+        f"M3->L : attendu MATCH, obtenu status={m3_row['status_quantity']!r} "
+        f"reason={m3_row['reason_quantity']!r}"
+    )
+
+    inch_row = result[result["HS Chapter"] == "19"].iloc[0]
+    assert inch_row["Quantity Unit"] == "M" and inch_row["status_quantity"] == "MATCH", (
+        f"INCH->M : attendu MATCH, obtenu status={inch_row['status_quantity']!r} "
+        f"reason={inch_row['reason_quantity']!r}"
+    )
+    print("OK  test_nouvelles_unites_poids_volume_longueur_fusionnent")
+
+
+def test_unites_ambigues_non_ajoutees_restent_isolees() -> None:
+    """GROSS_TONNAGE, TONNE et DMT sont volontairement absentes des tables de conversion (sens
+    ou facteur incertain) : elles ne doivent jamais fusionner avec KG/MT.
+    """
+    df_snowflake = pd.DataFrame(
+        [
+            _row(hs_chapter="20", currency="USD", total_value=100.0, number_of_records=1,
+                 quantity_unit="GROSS_TONNAGE", total_quantity=5.0),
+            _row(hs_chapter="20", currency="USD", total_value=200.0, number_of_records=1,
+                 quantity_unit="TONNE", total_quantity=3.0),
+            _row(hs_chapter="20", currency="USD", total_value=300.0, number_of_records=1,
+                 quantity_unit="DMT", total_quantity=4.0),
+            _row(hs_chapter="20", currency="USD", total_value=400.0, number_of_records=1,
+                 quantity_unit="KG", total_quantity=6.0),
+        ]
+    )
+    df_clustered = pd.DataFrame(
+        [
+            _clustered_row(hs_chapter="20", total_value=100.0, number_of_records=1,
+                            quantity_unit="GROSS_TONNAGE", total_quantity=5.0),
+            _clustered_row(hs_chapter="20", total_value=200.0, number_of_records=1,
+                            quantity_unit="TONNE", total_quantity=3.0),
+            _clustered_row(hs_chapter="20", total_value=300.0, number_of_records=1,
+                            quantity_unit="DMT", total_quantity=4.0),
+            _clustered_row(hs_chapter="20", total_value=400.0, number_of_records=1,
+                            quantity_unit="KG", total_quantity=6.0),
+        ]
+    )
+
+    result = compare_aggregated(df_snowflake, df_clustered)
+    assert len(result) == 4, (
+        f"Attendu 4 groupes distincts (GROSS_TONNAGE, TONNE, DMT, KG non fusionnes), obtenu {len(result)}"
+    )
+    assert set(result["Quantity Unit"]) == {"GROSS_TONNAGE", "TONNE", "DMT", "KG"}, (
+        f"Attendu 4 unites separees, obtenu {set(result['Quantity Unit'])}"
+    )
+    print("OK  test_unites_ambigues_non_ajoutees_restent_isolees")
+
+
+def test_find_unrecognized_units() -> None:
+    """_find_unrecognized_units doit ignorer les unites connues (KG) et les unites de comptage
+    attendues (UNIT), mais remonter les codes ambigus (GROSS_TONNAGE) et suspects (USD, qui
+    ressemble a un code devise egare dans la colonne unite).
+    """
+    df = pd.DataFrame(
+        {"Quantity Unit": ["KG", "unit", "GROSS_TONNAGE", "usd", "kg"]}
+    )
+
+    unrecognized = _find_unrecognized_units(df, "Quantity Unit")
+
+    assert unrecognized == {"GROSS_TONNAGE", "USD"}, (
+        f"Attendu uniquement {{'GROSS_TONNAGE', 'USD'}}, obtenu {unrecognized}"
+    )
+    print("OK  test_find_unrecognized_units")
+
+
 def test_get_mop_to_usd_rate_coherente() -> None:
     """Appel reseau reel (Frankfurter, via HKD) : verifie que get_mop_to_usd_rate(2026, 1)
     renvoie un taux MOP->USD coherent (MOP/USD tourne autour de 8, donc rate ~ 1/8 = 0.125)
@@ -253,6 +473,13 @@ if __name__ == "__main__":
         test_conversion_mop_passe_de_non_comparable_a_match,
         test_quantity_zero_des_deux_cotes_est_un_match,
         test_quantity_zero_dun_seul_cote_reste_non_comparable,
+        test_poids_lb_fusionne_avec_kg,
+        test_volume_ml_fusionne_avec_l,
+        test_surface_reste_separee_du_poids,
+        test_unite_inconnue_reste_isolee,
+        test_nouvelles_unites_poids_volume_longueur_fusionnent,
+        test_unites_ambigues_non_ajoutees_restent_isolees,
+        test_find_unrecognized_units,
         test_get_mop_to_usd_rate_coherente,
     ]
     failures = []

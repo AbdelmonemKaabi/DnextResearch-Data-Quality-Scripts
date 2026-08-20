@@ -20,16 +20,81 @@ _SAFE_DATASET_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 GROUP_KEYS = ["Month", "Trade Direction", "HS Chapter", "Quantity Unit", "Quantity 2 Unit"]
 
-# Conversion vers une unite canonique, par famille, pour rendre les quantites comparables entre
-# les deux sources meme quand l'une utilise MT (tonne metrique) et l'autre KG. Une unite absente
-# de cette table (volume, nombre de pieces, etc.) reste telle quelle : pas de fusion approximative.
-# Si Quantity 2 Unit utilise d'autres familles d'unites (volume...), donner les codes exacts et le
-# facteur de conversion pour completer cette table.
+# Conversion vers une unite canonique, par famille physique, pour rendre les quantites
+# comparables entre les deux sources meme quand l'une utilise MT (tonne metrique) et l'autre KG.
+# Une table par famille (poids/volume/longueur/surface) : seules des unites de la meme grandeur
+# physique peuvent fusionner entre elles, jamais deux grandeurs differentes (ex: KG et M2).
 WEIGHT_CONVERSION = {
     "KG": 1.0,
     "MT": 1000.0,
+    "LB": 0.45359237,  # 1 LB = 0.45359237 KG
+    "GRAM": 0.001,  # 1 GRAM = 0.001 KG
 }
 CANONICAL_WEIGHT_UNIT = "KG"
+
+VOLUME_CONVERSION = {
+    "L": 1.0,
+    "ML": 0.001,  # 1 ML = 0.001 L
+    "M3": 1000.0,  # 1 M3 = 1000 L
+    "KILO_LITER": 1000.0,  # 1 KILO_LITER = 1000 L
+    "CM3": 0.001,  # 1 CM3 = 0.001 L
+    "CUFT": 28.316846592,  # 1 cuft (pied cube) = 28.316846592 L -- cle en MAJUSCULE : le
+    # code est normalise via .str.upper() avant lookup (_normalize_unit_column), donc "cuft"
+    # brut devient "CUFT" au moment du match.
+}
+CANONICAL_VOLUME_UNIT = "L"
+
+LENGTH_CONVERSION = {
+    "M": 1.0,
+    "INCH": 0.0254,  # 1 INCH = 0.0254 M
+    "KILOMTR": 1000.0,  # 1 KILOMTR = 1000 M
+}
+CANONICAL_LENGTH_UNIT = "M"
+
+AREA_CONVERSION = {
+    "M2": 1.0,
+}
+CANONICAL_AREA_UNIT = "M2"
+
+# Codes rencontres dans les donnees reelles mais volontairement NON ajoutes ci-dessus : sens ou
+# facteur de conversion incertain, ne pas les ajouter sans confirmation prealable.
+#   - GROSS_TONNAGE : malgre le nom, ce n'est PAS un poids de cargaison mais une capacite de
+#     navire -- ne jamais fusionner avec KG/MT.
+#   - KILOGRAM_90_DRY, DMT : poids ajustes a l'humidite, pas equivalents a un poids brut.
+#   - TONNE : probablement un alias de MT, a confirmer avant fusion.
+#   - SHTN, LTN, OZT : tonnes/once non-metriques, facteurs differents de MT/KG.
+#   - MTK, CMK : possiblement des unites de surface, sens incertain.
+#   - BBL, FLOZ, MLT, HLIT : volumes avec plusieurs variantes possibles selon le pays/contexte.
+
+# Familles appliquees dans cet ordre. Les tables sont disjointes (un code d'unite n'apparait que
+# dans une seule table), donc l'ordre d'application n'a pas d'impact sur le resultat. Une unite
+# absente de toutes ces tables (UNIT, PIECE, PAIR...) reste dans son propre groupe : ce sont des
+# grandeurs non fongibles entre elles (comptage de pieces, pas une mesure physique continue), donc
+# aucune conversion n'est inventee pour elles. Pour completer une famille ou en ajouter une,
+# donner les codes exacts et le facteur de conversion vers l'unite canonique de la famille.
+UNIT_CONVERSION_FAMILIES = [
+    (WEIGHT_CONVERSION, CANONICAL_WEIGHT_UNIT),
+    (VOLUME_CONVERSION, CANONICAL_VOLUME_UNIT),
+    (LENGTH_CONVERSION, CANONICAL_LENGTH_UNIT),
+    (AREA_CONVERSION, CANONICAL_AREA_UNIT),
+]
+
+# Unites de comptage attendues : jamais convertibles entre elles (grandeurs non fongibles), donc
+# absentes de UNIT_CONVERSION_FAMILIES, mais ne doivent pas non plus remonter comme "unite
+# inconnue" dans _find_unrecognized_units.
+EXPECTED_COUNTING_UNITS = {"UNIT", "PIECE", "PAIR"}
+
+KNOWN_FAMILY_UNITS = {unit for table, _ in UNIT_CONVERSION_FAMILIES for unit in table}
+
+
+def _find_unrecognized_units(df: pd.DataFrame, unit_col: str) -> set[str]:
+    """Renvoie les codes d'unite (normalises comme le fait _normalize_unit_column, trim+upper)
+    presents dans `unit_col` qui ne sont ni dans une famille de conversion connue, ni dans les
+    unites de comptage attendues -- a passer en revue manuellement avant qu'ils ne causent un
+    mismatch silencieux (fusion manquante ou groupe isole a tort).
+    """
+    cleaned = df[unit_col].astype(str).str.strip().str.upper()
+    return set(cleaned.unique()) - KNOWN_FAMILY_UNITS - EXPECTED_COUNTING_UNITS - {"N/A", "NAN"}
 
 # ATTENTION : noms de colonnes "Quantity 2" / "Quantity 2 Unit" / "Quantity 2 Unit multiplier"
 # (Snowflake brut) devines par analogie avec "Quantity" / "Quantity Unit" / "Quantity Unit
@@ -172,9 +237,13 @@ def _normalize_unit_column(
 
 
 def _normalize_quantities(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalise les deux couples quantite/unite (Quantity Unit et Quantity 2 Unit)."""
-    df = _normalize_unit_column(df, "Total Quantity", "Quantity Unit", WEIGHT_CONVERSION, CANONICAL_WEIGHT_UNIT)
-    df = _normalize_unit_column(df, "Total Quantity 2", "Quantity 2 Unit", WEIGHT_CONVERSION, CANONICAL_WEIGHT_UNIT)
+    """Normalise les deux couples quantite/unite (Quantity Unit et Quantity 2 Unit), famille par
+    famille : seules les unites d'une meme famille physique (poids, volume, longueur, surface)
+    peuvent fusionner entre elles. Une unite hors de toute famille connue reste inchangee.
+    """
+    for conversion_table, canonical_unit in UNIT_CONVERSION_FAMILIES:
+        df = _normalize_unit_column(df, "Total Quantity", "Quantity Unit", conversion_table, canonical_unit)
+        df = _normalize_unit_column(df, "Total Quantity 2", "Quantity 2 Unit", conversion_table, canonical_unit)
     return df
 
 
@@ -406,18 +475,32 @@ if __name__ == "__main__":
 
     all_results = []
     failed_datasets = []
+    unrecognized_units = set()
 
     for dataset in datasets:
         print(f"\n########## Dataset : {dataset} ##########")
         try:
             df_clustered = run_query(CLUSTERED_QUERY, params={"data_source": dataset})
             df_snowflake = run_query(_build_snowflake_query(dataset))
+            for df, col in [
+                (df_clustered, "Quantity Unit"),
+                (df_clustered, "Quantity 2 Unit"),
+                (df_snowflake, "Quantity Unit"),
+                (df_snowflake, "Quantity 2 Unit"),
+            ]:
+                unrecognized_units |= _find_unrecognized_units(df, col)
             result = compare_aggregated(df_snowflake, df_clustered, tolerance=0.03)
             result.insert(0, "Dataset", dataset)
             all_results.append(result)
         except Exception as exc:
             print(f"[ERREUR] Dataset '{dataset}' ignore : {exc}")
             failed_datasets.append(dataset)
+
+    if unrecognized_units:
+        print(
+            f"\n[ATTENTION] Unites rencontrees non couvertes par une famille de conversion et non "
+            f"reconnues comme unites de comptage (a verifier manuellement) : {sorted(unrecognized_units)}"
+        )
 
     if all_results:
         combined = pd.concat(all_results, ignore_index=True)
