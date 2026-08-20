@@ -119,6 +119,44 @@ def get_monthly_average_rate(
     }
 
 
+# Le MOP (pataca de Macao) est indexe de facon fixe au HKD depuis 1983
+# via un systeme de currency board (Autorite Monetaire de Macao).
+# Taux officiel : 1 HKD = 1.03 MOP. Ce n'est pas un taux de marche,
+# c'est une politique monetaire stable depuis plus de 40 ans, mais a
+# revoir si Macao changeait de regime monetaire.
+MOP_TO_HKD_FIXED_RATE = 1 / 1.03  # 1 MOP = ~0.970874 HKD
+
+
+def get_mop_to_usd_rate(year: int, month: int, timeout: int = 10) -> dict:
+    """Calcule le taux de change mensuel moyen MOP -> USD via un peg fixe MOP -> HKD.
+
+    Frankfurter ne couvre que les ~31 devises de reference de la BCE et ne connait pas le MOP
+    (pataca de Macao). On passe donc par le HKD (couvert par Frankfurter), auquel le MOP est
+    indexe de facon fixe (voir MOP_TO_HKD_FIXED_RATE) : taux_MOP_USD = MOP_TO_HKD_FIXED_RATE *
+    taux_HKD_USD.
+
+    Args:
+        year: année (ex: 2026).
+        month: mois entre 1 et 12.
+        timeout: délai max en secondes pour la requête HTTP (transmis à get_monthly_average_rate).
+
+    Returns:
+        Un dict avec les mêmes clés que get_monthly_average_rate ("rate", "days_used", "dates"),
+        plus "via_peg" qui documente le chemin de conversion utilisé.
+
+    Raises:
+        ExchangeRateError: si le taux HKD -> USD ne peut pas être récupéré (propagée telle
+            quelle depuis get_monthly_average_rate, sans être masquée).
+    """
+    hkd_rate_info = get_monthly_average_rate("HKD", year, month, timeout=timeout)
+    return {
+        "rate": MOP_TO_HKD_FIXED_RATE * hkd_rate_info["rate"],
+        "days_used": hkd_rate_info["days_used"],
+        "dates": hkd_rate_info["dates"],
+        "via_peg": "MOP->HKD fixed, HKD->USD Frankfurter",
+    }
+
+
 if __name__ == "__main__":
     result = get_monthly_average_rate("EUR", 2010, 1)
     print(f"Taux moyen EUR->USD (2010-01) : {result['rate']:.5f}")
