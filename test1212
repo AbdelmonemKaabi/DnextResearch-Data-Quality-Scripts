@@ -1,0 +1,8 @@
+from te_scraper import build_comparison_dataframe
+
+df = build_comparison_dataframe(["australia", "vietnam", "germany"])
+print(df)
+print(df.dtypes)
+print(f"Nombre de lignes : {len(df)}")
+print(f"Pays presents : {df['Country'].unique()}")
+print(f"Plage de dates : {df['Month'].min()} - {df['Month'].max()}")
