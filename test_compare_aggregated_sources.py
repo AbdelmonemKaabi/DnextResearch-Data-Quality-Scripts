@@ -22,10 +22,17 @@ import pandas as pd
 from compare_aggregated_sources import (
     GROUP_KEYS,
     _aggregate_snowflake,
+    _count_invalid_chapter_records,
     _find_unrecognized_units,
     compare_aggregated,
 )
-from exchange_rate import get_mop_to_usd_rate
+from exchange_rate import (
+    FALLBACK_SOURCE_NAME,
+    ExchangeRateError,
+    UnsupportedCurrencyError,
+    get_monthly_usd_rate,
+    get_mop_to_usd_rate,
+)
 
 MONTH = pd.Timestamp("2026-01-01")
 
@@ -59,6 +66,7 @@ def _clustered_row(
     number_of_records: int = 1,
     quantity_unit: str = "KG",
     total_quantity: float = 100.0,
+    currency: str = "USD",
 ) -> dict:
     """Construit une ligne au format attendu par _aggregate_clustered (sortie CLUSTERED_QUERY)."""
     return {
@@ -67,6 +75,7 @@ def _clustered_row(
         "HS Chapter": hs_chapter,
         "Quantity Unit": quantity_unit,
         "Quantity 2 Unit": "N/A",
+        "Currency": currency,
         "Number of Records": number_of_records,
         "Total Quantity": total_quantity,
         "Total Quantity 2": 0.0,
@@ -412,6 +421,50 @@ def test_find_unrecognized_units() -> None:
     print("OK  test_find_unrecognized_units")
 
 
+def test_mismatch_petit_ecart_absolu_recoit_le_tag() -> None:
+    """MISMATCH avec un ecart absolu minuscule (0.005 < seuil 0.01) doit recevoir le tag
+    informatif dans reason_quantity, tout en restant MISMATCH (le statut ne change pas).
+    """
+    df_snowflake = pd.DataFrame(
+        [_row(hs_chapter="21", currency="USD", total_value=100.0, number_of_records=1,
+              total_quantity=100.005)]
+    )
+    df_clustered = pd.DataFrame(
+        [_clustered_row(hs_chapter="21", total_value=100.0, number_of_records=1, total_quantity=100.0)]
+    )
+
+    result = compare_aggregated(df_snowflake, df_clustered, tolerance=0.00001)
+    row = result[result["HS Chapter"] == "21"].iloc[0]
+
+    assert row["status_quantity"] == "MISMATCH", (
+        f"Attendu MISMATCH (tolerance volontairement tres basse), obtenu {row['status_quantity']!r}"
+    )
+    assert row["reason_quantity"] == "ecart_absolu_faible_possible_arrondi", (
+        f"Attendu le tag d'ecart absolu faible, obtenu {row['reason_quantity']!r}"
+    )
+    print("OK  test_mismatch_petit_ecart_absolu_recoit_le_tag")
+
+
+def test_mismatch_gros_ecart_absolu_ne_recoit_pas_le_tag() -> None:
+    """MISMATCH avec un ecart absolu franchement superieur au seuil ne doit PAS recevoir le tag."""
+    df_snowflake = pd.DataFrame(
+        [_row(hs_chapter="22", currency="USD", total_value=100.0, number_of_records=1, total_quantity=50.0)]
+    )
+    df_clustered = pd.DataFrame(
+        [_clustered_row(hs_chapter="22", total_value=100.0, number_of_records=1, total_quantity=100.0)]
+    )
+
+    result = compare_aggregated(df_snowflake, df_clustered)
+    row = result[result["HS Chapter"] == "22"].iloc[0]
+
+    assert row["status_quantity"] == "MISMATCH", f"Attendu MISMATCH, obtenu {row['status_quantity']!r}"
+    assert row["reason_quantity"] == "", (
+        f"Ecart absolu (50.0) largement au-dessus du seuil : reason_quantity devrait rester vide, "
+        f"obtenu {row['reason_quantity']!r}"
+    )
+    print("OK  test_mismatch_gros_ecart_absolu_ne_recoit_pas_le_tag")
+
+
 def test_get_mop_to_usd_rate_coherente() -> None:
     """Appel reseau reel (Frankfurter, via HKD) : verifie que get_mop_to_usd_rate(2026, 1)
     renvoie un taux MOP->USD coherent (MOP/USD tourne autour de 8, donc rate ~ 1/8 = 0.125)
@@ -465,6 +518,218 @@ def test_conversion_mop_passe_de_non_comparable_a_match() -> None:
     print("OK  test_conversion_mop_passe_de_non_comparable_a_match")
 
 
+def test_groupe_present_uniquement_dans_clustered_apparait() -> None:
+    """Un groupe present seulement cote Clustered doit apparaitre dans le resultat (jointure
+    externe), en NON_COMPARABLE sur toutes les metriques avec la raison absent_snowflake, au lieu
+    d'etre ignore silencieusement.
+    """
+    df_snowflake = pd.DataFrame([_row(hs_chapter="30", currency="USD", total_value=100.0)])
+    df_clustered = pd.DataFrame(
+        [
+            _clustered_row(hs_chapter="30", total_value=100.0),
+            _clustered_row(hs_chapter="31", total_value=999999.0),
+        ]
+    )
+
+    result = compare_aggregated(df_snowflake, df_clustered)
+    assert len(result) == 2, f"Attendu 2 groupes (commun + Clustered seul), obtenu {len(result)}"
+
+    row = _group(result, "31")
+    assert row["presence"] == "clustered_only", f"Attendu presence=clustered_only, obtenu {row['presence']!r}"
+    for metric in ["records", "quantity", "quantity2", "value"]:
+        assert row[f"status_{metric}"] == "NON_COMPARABLE", (
+            f"{metric} : attendu NON_COMPARABLE, obtenu {row[f'status_{metric}']!r}"
+        )
+        assert row[f"reason_{metric}"] == "absent_snowflake", (
+            f"{metric} : attendu reason='absent_snowflake', obtenu {row[f'reason_{metric}']!r}"
+        )
+    assert row["total_value_clustered_usd"] == 999999.0, "La valeur Clustered doit rester visible"
+    assert _group(result, "30")["presence"] == "both"
+    print("OK  test_groupe_present_uniquement_dans_clustered_apparait")
+
+
+def test_groupe_present_uniquement_dans_snowflake_apparait() -> None:
+    """Un groupe present seulement cote Snowflake doit apparaitre dans le resultat (et plus
+    seulement etre compte dans le resume), en NON_COMPARABLE avec la raison absent_clustered.
+    """
+    df_snowflake = pd.DataFrame(
+        [
+            _row(hs_chapter="32", currency="USD", total_value=100.0),
+            _row(hs_chapter="33", currency="USD", total_value=5000.0, number_of_records=7),
+        ]
+    )
+    df_clustered = pd.DataFrame([_clustered_row(hs_chapter="32", total_value=100.0)])
+
+    result = compare_aggregated(df_snowflake, df_clustered)
+    row = _group(result, "33")
+    assert row["presence"] == "snowflake_only", f"Attendu presence=snowflake_only, obtenu {row['presence']!r}"
+    assert row["status_value"] == "NON_COMPARABLE" and row["reason_value"] == "absent_clustered", (
+        f"Attendu NON_COMPARABLE/absent_clustered, obtenu {row['status_value']!r}/{row['reason_value']!r}"
+    )
+    assert row["number_of_records_snowflake"] == 7, "Le nombre d'enregistrements Snowflake doit rester visible"
+    assert pd.isna(row["number_of_records_clustered"]), "Aucun enregistrement Clustered attendu"
+    print("OK  test_groupe_present_uniquement_dans_snowflake_apparait")
+
+
+def test_devise_non_usd_cote_clustered_rend_la_valeur_non_comparable() -> None:
+    """Une ligne Clustered en EUR avec une vraie valeur ne doit plus etre sommee comme des USD :
+    la valeur du groupe devient NON_COMPARABLE avec la devise fautive dans la raison. Les
+    quantites, elles, restent comparees normalement.
+    """
+    df_snowflake = pd.DataFrame([_row(hs_chapter="34", currency="USD", total_value=100.0, total_quantity=200.0)])
+    df_clustered = pd.DataFrame(
+        [
+            _clustered_row(hs_chapter="34", total_value=50.0, currency="USD"),
+            _clustered_row(hs_chapter="34", total_value=50.0, currency="EUR"),
+        ]
+    )
+
+    result = compare_aggregated(df_snowflake, df_clustered)
+    row = _group(result, "34")
+    assert row["status_value"] == "NON_COMPARABLE", (
+        f"Attendu NON_COMPARABLE (EUR somme comme USD), obtenu {row['status_value']!r}"
+    )
+    assert row["reason_value"] == "clustered_devise_non_usd: EUR", (
+        f"Attendu reason='clustered_devise_non_usd: EUR', obtenu {row['reason_value']!r}"
+    )
+    assert row["status_quantity"] == "MATCH", (
+        f"La quantite (200 = 100 + 100) doit rester comparee, obtenu {row['status_quantity']!r}"
+    )
+    print("OK  test_devise_non_usd_cote_clustered_rend_la_valeur_non_comparable")
+
+
+def test_devise_clustered_tolerees() -> None:
+    """Cote Clustered, une devise non renseignee (N/A) est toleree comme USD (hypothese documentee),
+    et une devise etrangere sur une ligne a valeur nulle ne contamine pas le groupe.
+    """
+    df_snowflake = pd.DataFrame([_row(hs_chapter="35", currency="USD", total_value=100.0, total_quantity=300.0)])
+    df_clustered = pd.DataFrame(
+        [
+            _clustered_row(hs_chapter="35", total_value=60.0, currency="USD"),
+            _clustered_row(hs_chapter="35", total_value=40.0, currency="N/A"),
+            _clustered_row(hs_chapter="35", total_value=0.0, currency="EUR"),
+        ]
+    )
+
+    result = compare_aggregated(df_snowflake, df_clustered)
+    row = _group(result, "35")
+    assert row["status_value"] == "MATCH" and row["reason_value"] == "", (
+        f"Attendu MATCH sans raison, obtenu {row['status_value']!r}/{row['reason_value']!r}"
+    )
+    print("OK  test_devise_clustered_tolerees")
+
+
+def test_nombre_enregistrements_est_compare() -> None:
+    """Un ecart de nombre d'enregistrements (1 vs 500) doit donner MISMATCH sur status_records,
+    meme si valeur et quantite concordent ; un nombre identique doit donner MATCH.
+    """
+    df_snowflake = pd.DataFrame(
+        [
+            _row(hs_chapter="36", currency="USD", total_value=100.0, number_of_records=1),
+            _row(hs_chapter="37", currency="USD", total_value=100.0, number_of_records=42),
+        ]
+    )
+    df_clustered = pd.DataFrame(
+        [
+            _clustered_row(hs_chapter="36", total_value=100.0, number_of_records=500),
+            _clustered_row(hs_chapter="37", total_value=100.0, number_of_records=42),
+        ]
+    )
+
+    result = compare_aggregated(df_snowflake, df_clustered)
+    row = _group(result, "36")
+    assert row["status_records"] == "MISMATCH", f"Attendu MISMATCH (1 vs 500), obtenu {row['status_records']!r}"
+    assert row["status_value"] == "MATCH" and row["status_quantity"] == "MATCH"
+    assert _group(result, "37")["status_records"] == "MATCH", "42 vs 42 : attendu MATCH"
+    print("OK  test_nombre_enregistrements_est_compare")
+
+
+def test_count_invalid_chapter_records() -> None:
+    """Seuls les chapitres hors 01-99 ('00', ou un code d'un seul chiffre comme '1') sont comptes."""
+    df = pd.DataFrame(
+        {"HS Chapter": ["00", "84", "00", "01", "1", "99"], "Number of Records": [3, 10, 2, 5, 7, 4]}
+    )
+    n_invalid = _count_invalid_chapter_records(df)
+    assert n_invalid == 12, f"Attendu 12 enregistrements invalides ('00' x2 et '1'), obtenu {n_invalid}"
+    print("OK  test_count_invalid_chapter_records")
+
+
+def test_dexp_et_reex_fusionnes_en_export() -> None:
+    """Cote Snowflake, DEXP (exportations domestiques) et REEX (reexportations) doivent etre
+    ramenes a "Export" comme dans Clustered : un seul groupe, present des deux cotes, qui concorde.
+    """
+    df_snowflake = pd.DataFrame(
+        [
+            {**_row(hs_chapter="40", currency="USD", total_value=70.0, total_quantity=60.0), "Trade Direction": "DEXP"},
+            {**_row(hs_chapter="40", currency="USD", total_value=30.0, total_quantity=40.0), "Trade Direction": "REEX"},
+        ]
+    )
+    df_clustered = pd.DataFrame(
+        [_clustered_row(hs_chapter="40", total_value=100.0, number_of_records=2, total_quantity=100.0)]
+    )
+
+    result = compare_aggregated(df_snowflake, df_clustered)
+    assert len(result) == 1, f"Attendu 1 groupe (DEXP + REEX = Export), obtenu {len(result)}"
+    row = result.iloc[0]
+    assert row["Trade Direction"] == "Export" and row["presence"] == "both", (
+        f"Attendu Export present des deux cotes, obtenu {row['Trade Direction']!r} / {row['presence']!r}"
+    )
+    assert row["status_value"] == "MATCH" and row["status_quantity"] == "MATCH", (
+        f"Attendu MATCH, obtenu value={row['status_value']!r} quantity={row['status_quantity']!r}"
+    )
+    print("OK  test_dexp_et_reex_fusionnes_en_export")
+
+
+def test_devise_a_parite_fixe_convertie_sans_reseau() -> None:
+    """SAR (3.75 SAR = 1 USD) doit se convertir via la parite fixe, sans appel reseau : 375 SAR =
+    100 USD = clustered -> MATCH.
+    """
+    df_snowflake = pd.DataFrame([_row(hs_chapter="41", currency="SAR", total_value=375.0)])
+    df_clustered = pd.DataFrame([_clustered_row(hs_chapter="41", total_value=100.0)])
+
+    with patch("exchange_rate.requests.get", side_effect=AssertionError("aucun appel reseau attendu")):
+        result = compare_aggregated(df_snowflake, df_clustered)
+    row = result.iloc[0]
+    assert row["status_value"] == "MATCH", (
+        f"Attendu MATCH (375 SAR = 100 USD), obtenu {row['status_value']!r} reason={row['reason_value']!r}"
+    )
+    assert abs(row["total_value_snowflake_usd"] - 100.0) < 1e-9
+    print("OK  test_devise_a_parite_fixe_convertie_sans_reseau")
+
+
+def test_source_de_secours_si_frankfurter_ne_connait_pas_la_devise() -> None:
+    """Devise inconnue de Frankfurter : get_monthly_usd_rate doit basculer sur currency-api et
+    moyenner les jours ouvrables du mois (22 en janvier 2026). Code devise fictif (XAA) pour ne pas
+    polluer le cache d'une vraie devise.
+    """
+    with patch("exchange_rate.get_monthly_average_rate", side_effect=UnsupportedCurrencyError("inconnue")), \
+            patch("exchange_rate._get_daily_rate_fallback", return_value=0.5) as daily:
+        info = get_monthly_usd_rate("XAA", 2026, 1)
+
+    assert info["rate"] == 0.5 and info["source"] == FALLBACK_SOURCE_NAME, f"Resultat inattendu : {info}"
+    assert info["days_used"] == 22 and daily.call_count == 22, (
+        f"Attendu 22 jours ouvrables en janvier 2026, obtenu days_used={info['days_used']} appels={daily.call_count}"
+    )
+    print("OK  test_source_de_secours_si_frankfurter_ne_connait_pas_la_devise")
+
+
+def test_echec_source_de_secours_memorise() -> None:
+    """Si la source de secours n'a aucun taux pour un mois, l'echec doit etre memorise : un second
+    appel echoue aussitot, sans refaire les ~20 requetes (sinon une requete par ligne agregee).
+    """
+    with patch("exchange_rate.get_monthly_average_rate", side_effect=UnsupportedCurrencyError("inconnue")), \
+            patch("exchange_rate._get_daily_rate_fallback", return_value=None) as daily:
+        for _ in range(2):
+            try:
+                get_monthly_usd_rate("XBB", 2026, 1)
+                raise AssertionError("ExchangeRateError attendue (aucun taux disponible)")
+            except ExchangeRateError:
+                pass
+
+    assert daily.call_count == 22, f"Attendu 22 requetes au total (premier appel seulement), obtenu {daily.call_count}"
+    print("OK  test_echec_source_de_secours_memorise")
+
+
 if __name__ == "__main__":
     tests = [
         test_devise_manquante_valeur_nulle_exclue_silencieusement,
@@ -480,6 +745,18 @@ if __name__ == "__main__":
         test_nouvelles_unites_poids_volume_longueur_fusionnent,
         test_unites_ambigues_non_ajoutees_restent_isolees,
         test_find_unrecognized_units,
+        test_mismatch_petit_ecart_absolu_recoit_le_tag,
+        test_mismatch_gros_ecart_absolu_ne_recoit_pas_le_tag,
+        test_groupe_present_uniquement_dans_clustered_apparait,
+        test_groupe_present_uniquement_dans_snowflake_apparait,
+        test_devise_non_usd_cote_clustered_rend_la_valeur_non_comparable,
+        test_devise_clustered_tolerees,
+        test_nombre_enregistrements_est_compare,
+        test_count_invalid_chapter_records,
+        test_dexp_et_reex_fusionnes_en_export,
+        test_devise_a_parite_fixe_convertie_sans_reseau,
+        test_source_de_secours_si_frankfurter_ne_connait_pas_la_devise,
+        test_echec_source_de_secours_memorise,
         test_get_mop_to_usd_rate_coherente,
     ]
     failures = []

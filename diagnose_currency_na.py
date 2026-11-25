@@ -27,7 +27,7 @@ BASE_DATA_CTE = """
 WITH BASE_DATA AS (
     SELECT
         DATE_TRUNC('MONTH', "Date Reporter"::DATE) AS "Month",
-        LEFT(LPAD(REGEXP_REPLACE(SPLIT_PART(TRIM(TO_VARCHAR("HS Code")), '.', 1), '[^0-9]', ''), 8, '0'), 2) AS "HS Chapter",
+        LEFT(REGEXP_REPLACE(SPLIT_PART(TRIM(TO_VARCHAR("HS Code")), '.', 1), '[^0-9]', ''), 2) AS "HS Chapter",
         COALESCE(GET(TRY_PARSE_JSON(TO_VARCHAR("Trade Direction")), 'Code')::STRING, NULLIF(TRIM(TO_VARCHAR("Trade Direction")), ''), 'N/A') AS "Trade Direction",
         COALESCE(GET(TRY_PARSE_JSON(TO_VARCHAR("Quantity Unit")), 'Code')::STRING, NULLIF(TRIM(TO_VARCHAR("Quantity Unit")), ''), 'N/A') AS "Quantity Unit",
         COALESCE(GET(TRY_PARSE_JSON(TO_VARCHAR("Quantity 2 Unit")), 'Code')::STRING, NULLIF(TRIM(TO_VARCHAR("Quantity 2 Unit")), ''), 'N/A') AS "Quantity 2 Unit",
