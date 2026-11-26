@@ -135,15 +135,15 @@ def compare_checks(checks: pd.DataFrame, clustered: pd.DataFrame, te_df: pd.Data
         cl = clustered[(clustered["Month"] == month) & (clustered["Trade Direction"] == direction)]
         te_points = te[(te["Month"] == month) & (te["Direction"] == direction)]
         value_cl = float(cl["Total Value"].sum()) if len(cl) else None
-        value_te = float(te_points["value_usd"].iloc[0]) if len(te_points) == 1 else None
+        # Deux points TE dans le meme mois (provisoire puis definitif) : le dernier du graphique est
+        # garde, meme regle que _compare_country (compare_clustered_vs_tradingeconomics.py).
+        value_te = float(te_points["value_usd"].iloc[-1]) if len(te_points) else None
 
         ratio = pct_diff = None
         if value_cl is None:
             status, reason = "NON_COMPARABLE", "absent_clustered"
         elif len(te_points) == 0:
             status, reason = "NON_COMPARABLE", "absent_te"
-        elif len(te_points) > 1:
-            status, reason = "NON_COMPARABLE", "te_mois_en_double"
         elif pd.isna(value_te):
             status, reason = "NON_COMPARABLE", "te_conversion_echouee"
         elif value_cl == 0:
@@ -152,6 +152,8 @@ def compare_checks(checks: pd.DataFrame, clustered: pd.DataFrame, te_df: pd.Data
             ratio = value_te / value_cl
             pct_diff = abs(value_te - value_cl) / abs(value_cl)
             status, reason = ("MATCH" if pct_diff <= TOLERANCE else "MISMATCH"), ""
+        if len(te_points) > 1 and reason == "":
+            reason = "te_mois_en_double_dernier_point_garde"
         rows.append({
             "Month": month.date(), "Trade Direction": direction,
             "value_clustered_usd": value_cl, "value_te_usd": value_te,

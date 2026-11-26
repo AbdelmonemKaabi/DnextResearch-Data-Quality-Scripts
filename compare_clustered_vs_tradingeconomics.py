@@ -226,6 +226,7 @@ def _compare_country(clustered_sub: pd.DataFrame, te_df: pd.DataFrame, tolerance
     ("sans_correspondance") ; conversion USD TE echouee (value_te_usd NaN) -> NON_COMPARABLE
     ("te_conversion_echouee") ; valeur source NaN (conversion USD du dataset echouee) ->
     NON_COMPARABLE ("source_conversion_echouee") ; sinon MATCH/MISMATCH selon le seuil `tolerance`.
+    Deux points TE dans un meme mois : le dernier est garde, reason "te_mois_en_double_dernier_point_garde".
     """
     clustered = clustered_sub[["Month", "Trade Direction", "Total Value"]].copy()
     clustered["Trade Direction"] = clustered["Trade Direction"].astype(str).str.strip().str.title()
@@ -234,14 +235,19 @@ def _compare_country(clustered_sub: pd.DataFrame, te_df: pd.DataFrame, tolerance
 
     te = te_df.rename(columns={"Direction": "Trade Direction", "value_usd": "value_te_usd"})
     te["Trade Direction"] = te["Trade Direction"].astype(str).str.strip().str.title()
+    # Le graphique TE a parfois DEUX points dans le meme mois (ex: Vietnam 2020-08 : 26.5 puis
+    # 27.7 Mds, estimation provisoire puis chiffre definitif). Les additionner doublait le mois.
+    # Les points arrivent dans l'ordre chronologique du graphique : on garde le dernier (le plus
+    # recent), qui est celui qui correspond aux donnees officielles dans tous les cas verifies
+    # (Vietnam 4/4 a l'identique, Philippines, Thailande). Le mois reste compare, mais sa colonne
+    # reason vaut "te_mois_en_double_dernier_point_garde" pour qu'il reste reperable.
+    duplicated = te.duplicated(["Month", "Trade Direction"], keep="last")
+    duplicated_months = set(zip(te.loc[duplicated, "Month"], te.loc[duplicated, "Trade Direction"]))
+    if duplicated.any():
+        print(f"[INFO] {int(duplicated.sum())} point(s) Trading Economics en double dans un meme mois : dernier point garde.")
+        te = te[~duplicated]
     # min_count=1 : un mois dont la conversion USD a echoue (NaN) reste NaN -> NON_COMPARABLE
     # "te_conversion_echouee", au lieu d'etre additionne a 0 (faux ecart de -100 %).
-    # Le graphique TE contient parfois deux points dans un meme mois (vu pour le Vietnam :
-    # 2020-08 et 2021-03, valeurs differentes). Les additionner doublerait le mois ; on ne sait pas
-    # lequel garder, donc le mois est NON_COMPARABLE ("te_mois_en_double").
-    duplicated_months = set(
-        map(tuple, te.loc[te.duplicated(["Month", "Trade Direction"], keep=False), ["Month", "Trade Direction"]].values)
-    )
     te = te.groupby(["Month", "Trade Direction"], as_index=False)["value_te_usd"].sum(min_count=1)
 
     # Fenetre commune : sans abonnement, Trading Economics ne publie qu'environ 10 ans d'historique
@@ -268,10 +274,6 @@ def _compare_country(clustered_sub: pd.DataFrame, te_df: pd.DataFrame, tolerance
             pct_diffs.append(None)
             statuses.append("NON_COMPARABLE")
             reasons.append("sans_correspondance")
-        elif (row["Month"], row["Trade Direction"]) in duplicated_months:
-            pct_diffs.append(None)
-            statuses.append("NON_COMPARABLE")
-            reasons.append("te_mois_en_double")
         elif pd.isna(row["value_te_usd"]):
             pct_diffs.append(None)
             statuses.append("NON_COMPARABLE")
@@ -299,6 +301,9 @@ def _compare_country(clustered_sub: pd.DataFrame, te_df: pd.DataFrame, tolerance
     merged["pct_diff"] = pct_diffs
     merged["status"] = statuses
     merged["reason"] = reasons
+    # Mois TE en double (dernier point garde, voir plus haut) : compare normalement, mais signale.
+    flagged = [(m, d) in duplicated_months and r == "" for m, d, r in zip(merged["Month"], merged["Trade Direction"], merged["reason"])]
+    merged.loc[flagged, "reason"] = "te_mois_en_double_dernier_point_garde"
 
     return merged[["Month", "Trade Direction", "value_clustered_usd", "value_te_usd", "pct_diff", "status", "reason"]]
 

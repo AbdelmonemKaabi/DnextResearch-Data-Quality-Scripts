@@ -19,6 +19,9 @@ Exclus :
 Usage :
     python compare_all_clustered_vs_tradingeconomics.py              # tous les pays
     python compare_all_clustered_vs_tradingeconomics.py FIN DEU      # seulement ces codes ISO3
+                                                                     # (fichiers ..._FIN_DEU.csv)
+    python compare_all_clustered_vs_tradingeconomics.py VNM --datasource dnexr-un-comtrade-all-all-tf-customs-bilateral-weekly
+                                                                     # un DataSource exclu, sur demande
     python compare_all_clustered_vs_tradingeconomics.py --dry-run    # couples + mapping TE, sans scraper
     python compare_all_clustered_vs_tradingeconomics.py --refresh    # ignore le cache TE, re-scrape tout
 """
@@ -60,16 +63,31 @@ SELECT
     COALESCE(NULLIF(TRIM(TO_VARCHAR("TradeFlow")), ''), 'N/A') AS "Trade Direction",
     SUM(COALESCE("Value", 0)) AS "Total Value"
 FROM DNEXR.FUNDAMENTALS_CUSTOMS."DNEXR-CUSTOMS-CLUSTERED"
-WHERE "DataSource" NOT IN ({excluded})
+WHERE {where}
 GROUP BY 1, 2, 3, 4
 """
 
 
-def _fetch_all_clustered_totals() -> pd.DataFrame:
-    """Totaux mensuels Clustered par (DataSource, Reporter, Month, TradeFlow), hors EXCLUDED_DATASOURCES."""
-    placeholders = ", ".join(f"%(excluded_{i})s" for i in range(len(EXCLUDED_DATASOURCES)))
-    params = {f"excluded_{i}": ds for i, ds in enumerate(EXCLUDED_DATASOURCES)}
-    df = run_query(ALL_CLUSTERED_MONTHLY_QUERY.format(excluded=placeholders), params=params)
+def _fetch_all_clustered_totals(datasource: str | None = None, countries: list[str] | None = None) -> pd.DataFrame:
+    """Totaux mensuels Clustered par (DataSource, Reporter, Month, TradeFlow).
+
+    Par defaut tous les DataSources hors EXCLUDED_DATASOURCES ; avec `datasource`, ce seul
+    DataSource (meme s'il est exclu par defaut, ex: UN Comtrade pour le Vietnam). `countries`
+    limite la requete a ces codes Reporter (evite d'agreger tout un DataSource multi-pays).
+    """
+    params: dict[str, str] = {}
+    if datasource:
+        conditions = ['"DataSource" = %(datasource)s']
+        params["datasource"] = datasource
+    else:
+        placeholders = ", ".join(f"%(excluded_{i})s" for i in range(len(EXCLUDED_DATASOURCES)))
+        conditions = [f'"DataSource" NOT IN ({placeholders})']
+        params.update({f"excluded_{i}": ds for i, ds in enumerate(EXCLUDED_DATASOURCES)})
+    if countries:
+        placeholders = ", ".join(f"%(country_{i})s" for i in range(len(countries)))
+        conditions.append(f'TRIM(TO_VARCHAR("Reporter")) IN ({placeholders})')
+        params.update({f"country_{i}": c for i, c in enumerate(countries)})
+    df = run_query(ALL_CLUSTERED_MONTHLY_QUERY.format(where=" AND ".join(conditions)), params=params)
     df["Total Value"] = pd.to_numeric(df["Total Value"], errors="raise").astype("float64")
     return df
 
@@ -137,16 +155,32 @@ def main() -> None:
     parser.add_argument("countries", nargs="*", help="Codes ISO3 a traiter (defaut : tous).")
     parser.add_argument("--dry-run", action="store_true", help="Liste les couples et le mapping TE, sans scraper.")
     parser.add_argument("--refresh", action="store_true", help="Ignore le cache TE et re-scrape chaque pays.")
+    parser.add_argument(
+        "--datasource",
+        help="Compare ce seul DataSource, meme s'il est exclu par defaut "
+        "(ex: --datasource dnexr-un-comtrade-all-all-tf-customs-bilateral-weekly VNM).",
+    )
     args = parser.parse_args()
 
-    print(f"########## Totaux Clustered (hors {len(EXCLUDED_DATASOURCES)} DataSources exclus) ##########")
-    df_all = _fetch_all_clustered_totals()
+    wanted = sorted({c.strip().upper() for c in args.countries})
+    if args.datasource:
+        print(f"########## Totaux Clustered du DataSource {args.datasource} ##########")
+    else:
+        print(f"########## Totaux Clustered (hors {len(EXCLUDED_DATASOURCES)} DataSources exclus) ##########")
+    df_all = _fetch_all_clustered_totals(args.datasource, wanted)
     pairs = df_all[["DataSource", "Country Reporter"]].drop_duplicates().sort_values(["Country Reporter", "DataSource"])
-    if args.countries:
-        wanted = {c.strip().upper() for c in args.countries}
-        pairs = pairs[pairs["Country Reporter"].isin(wanted)]
     codes = sorted(pairs["Country Reporter"].unique())
     print(f"{len(pairs)} couple(s) (DataSource, pays) pour {len(codes)} pays.")
+    if wanted and set(wanted) - set(codes):
+        print(f"[ATTENTION] Pays absents de Clustered (pour ce perimetre) : {sorted(set(wanted) - set(codes))}")
+
+    # Un run partiel (pays choisis) ecrit dans ses propres fichiers pour ne pas ecraser le
+    # resultat complet : ex. all_clustered_vs_tradingeconomics_result_VNM.csv.
+    output_file, summary_file = OUTPUT_FILE, SUMMARY_FILE
+    if wanted:
+        suffix = "_" + "_".join(wanted)
+        output_file = OUTPUT_FILE.replace(".csv", f"{suffix}.csv")
+        summary_file = SUMMARY_FILE.replace(".csv", f"{suffix}.csv")
 
     slugs = {code: resolve_te_slug(code) for code in codes}
     unmapped = {code: reason for code, (slug, reason) in slugs.items() if slug is None}
@@ -212,12 +246,12 @@ def main() -> None:
             summary_rows.append({"DataSource": ds, "Country": code, "TE_Slug": "", "status": "non_mappe", "note": reason})
 
     summary = pd.DataFrame(summary_rows)
-    summary.to_csv(SUMMARY_FILE, index=False)
-    print(f"\nResume par couple exporte dans {SUMMARY_FILE} ({len(summary)} ligne(s))")
+    summary.to_csv(summary_file, index=False)
+    print(f"\nResume par couple exporte dans {summary_file} ({len(summary)} ligne(s))")
     if all_results:
         combined = pd.concat(all_results, ignore_index=True)
-        combined.to_csv(OUTPUT_FILE, index=False)
-        print(f"Detail mensuel exporte dans {OUTPUT_FILE} ({len(combined)} ligne(s))")
+        combined.to_csv(output_file, index=False)
+        print(f"Detail mensuel exporte dans {output_file} ({len(combined)} ligne(s))")
 
         print("\n=== Resume ===")
         print("Couples par statut :", summary["status"].value_counts().to_dict())

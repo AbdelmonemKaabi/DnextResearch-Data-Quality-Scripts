@@ -100,8 +100,32 @@ def test_etats_unis_biens_seulement() -> None:
     print("OK  test_etats_unis_biens_seulement")
 
 
+def test_deux_points_te_meme_mois() -> None:
+    """Deux points TE dans le meme mois (provisoire puis definitif, cas Vietnam 2020-08) : le
+    dernier est garde, ils ne sont pas additionnes (sinon le mois est double), et le mois est
+    signale dans reason. Un mois sans doublon garde une reason vide."""
+    clustered = pd.DataFrame(
+        [
+            {"Month": dt.date(2020, 8, 1), "Trade Direction": "Export", "Total Value": 27.70},
+            {"Month": dt.date(2020, 9, 1), "Trade Direction": "Export", "Total Value": 27.16},
+        ]
+    )
+    te = pd.DataFrame(
+        [
+            {"Month": dt.date(2020, 8, 1), "Direction": "Export", "value_usd": 26.5},
+            {"Month": dt.date(2020, 8, 1), "Direction": "Export", "value_usd": 27.7},
+            {"Month": dt.date(2020, 9, 1), "Direction": "Export", "value_usd": 27.16},
+        ]
+    )
+    result = _compare_country(clustered, te, tolerance=0.03).sort_values("Month")
+    got = list(zip(result["value_te_usd"], result["status"], result["reason"]))
+    assert got == [(27.7, "MATCH", "te_mois_en_double_dernier_point_garde"), (27.16, "MATCH", "")], got
+    print("OK  test_deux_points_te_meme_mois")
+
+
 if __name__ == "__main__":
     tests = [
+        test_deux_points_te_meme_mois,
         test_serie_mensuelle_detectee,
         test_serie_trimestrielle_rejetee,
         test_mapping_pays,
