@@ -224,7 +224,8 @@ def _compare_country(clustered_sub: pd.DataFrame, te_df: pd.DataFrame, tolerance
     Regles (identiques a compare_aggregated_sources.py) : 0=0 -> MATCH ; valeur clustered a 0
     (et TE non nul) -> NON_COMPARABLE ; mois absent d'un cote -> NON_COMPARABLE
     ("sans_correspondance") ; conversion USD TE echouee (value_te_usd NaN) -> NON_COMPARABLE
-    ("te_conversion_echouee") ; sinon MATCH/MISMATCH selon le seuil `tolerance`.
+    ("te_conversion_echouee") ; valeur source NaN (conversion USD du dataset echouee) ->
+    NON_COMPARABLE ("source_conversion_echouee") ; sinon MATCH/MISMATCH selon le seuil `tolerance`.
     """
     clustered = clustered_sub[["Month", "Trade Direction", "Total Value"]].copy()
     clustered["Trade Direction"] = clustered["Trade Direction"].astype(str).str.strip().str.title()
@@ -235,6 +236,12 @@ def _compare_country(clustered_sub: pd.DataFrame, te_df: pd.DataFrame, tolerance
     te["Trade Direction"] = te["Trade Direction"].astype(str).str.strip().str.title()
     # min_count=1 : un mois dont la conversion USD a echoue (NaN) reste NaN -> NON_COMPARABLE
     # "te_conversion_echouee", au lieu d'etre additionne a 0 (faux ecart de -100 %).
+    # Le graphique TE contient parfois deux points dans un meme mois (vu pour le Vietnam :
+    # 2020-08 et 2021-03, valeurs differentes). Les additionner doublerait le mois ; on ne sait pas
+    # lequel garder, donc le mois est NON_COMPARABLE ("te_mois_en_double").
+    duplicated_months = set(
+        map(tuple, te.loc[te.duplicated(["Month", "Trade Direction"], keep=False), ["Month", "Trade Direction"]].values)
+    )
     te = te.groupby(["Month", "Trade Direction"], as_index=False)["value_te_usd"].sum(min_count=1)
 
     # Fenetre commune : sans abonnement, Trading Economics ne publie qu'environ 10 ans d'historique
@@ -261,10 +268,20 @@ def _compare_country(clustered_sub: pd.DataFrame, te_df: pd.DataFrame, tolerance
             pct_diffs.append(None)
             statuses.append("NON_COMPARABLE")
             reasons.append("sans_correspondance")
+        elif (row["Month"], row["Trade Direction"]) in duplicated_months:
+            pct_diffs.append(None)
+            statuses.append("NON_COMPARABLE")
+            reasons.append("te_mois_en_double")
         elif pd.isna(row["value_te_usd"]):
             pct_diffs.append(None)
             statuses.append("NON_COMPARABLE")
             reasons.append("te_conversion_echouee")
+        elif pd.isna(row["value_clustered_usd"]):
+            # Cas du dataset source converti en USD (compare_dataset_vs_tradingeconomics.py) : un
+            # taux de change introuvable donne NaN, qui sinon sortirait en faux MISMATCH.
+            pct_diffs.append(None)
+            statuses.append("NON_COMPARABLE")
+            reasons.append("source_conversion_echouee")
         elif row["value_clustered_usd"] == 0 and row["value_te_usd"] == 0:
             pct_diffs.append(0.0)
             statuses.append("MATCH")

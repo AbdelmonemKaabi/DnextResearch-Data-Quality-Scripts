@@ -80,7 +80,21 @@ INDICATORS = {
     "balance-of-trade": "Balance of Trade",
     "exports": "Exports",
     "imports": "Imports",
+    "goods-exports": "Goods Exports",
+    "goods-imports": "Goods Imports",
 }
+
+# Pays dont les pages Trading Economics "exports"/"imports" incluent les services (base balance
+# des paiements) : on lit "goods-exports"/"goods-imports", seul perimetre comparable aux donnees
+# douanieres (Etats-Unis, sept. 2026 : exports 321,5 Md USD contre goods-exports 209,1 Md USD).
+GOODS_ONLY_COUNTRIES = {"united-states"}
+
+
+def trade_indicator_slugs(country_slug: str) -> dict:
+    """Slug de page Trading Economics a lire par direction (Export/Import) pour ce pays."""
+    if country_slug in GOODS_ONLY_COUNTRIES:
+        return {"Export": "goods-exports", "Import": "goods-imports"}
+    return {"Export": "exports", "Import": "imports"}
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +418,8 @@ def scrape_country_trade_series(country_slug: str, wait_seconds: float = 4.0):
     table_data = get_balance_of_trade(country_slug)
 
     rows = []
-    for direction, indicator_name in (("Export", "Exports"), ("Import", "Imports")):
+    for direction, indicator_slug in trade_indicator_slugs(country_slug).items():
+        indicator_name = INDICATORS[indicator_slug]
         indicator = table_data.get(indicator_name)
         if indicator is None or not indicator.get("unit"):
             print(f"[AVERTISSEMENT] {country_slug} : unite introuvable pour {indicator_name}, pays ignore pour cette direction.")
@@ -416,7 +431,7 @@ def scrape_country_trade_series(country_slug: str, wait_seconds: float = 4.0):
             print(f"[AVERTISSEMENT] {country_slug}/{indicator_name} : {exc} -- direction ignoree.")
             continue
 
-        page_path = f"{country_slug}/{indicator_name.lower()}"
+        page_path = f"{country_slug}/{indicator_slug}"
         series = scrape_highcharts_series(page_path, wait_seconds=wait_seconds)
 
         for date, raw_value in series:

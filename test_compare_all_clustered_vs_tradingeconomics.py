@@ -12,6 +12,7 @@ import pandas as pd
 
 from compare_all_clustered_vs_tradingeconomics import _is_te_monthly, _summarize_pair
 from compare_clustered_vs_tradingeconomics import _compare_country, resolve_te_slug
+from te_scraper import trade_indicator_slugs
 
 
 def _te(months: list[dt.date], direction: str = "Export", value: float = 100.0) -> pd.DataFrame:
@@ -92,6 +93,13 @@ def test_conversion_te_manquante_non_comparable() -> None:
     print("OK  test_conversion_te_manquante_non_comparable")
 
 
+def test_etats_unis_biens_seulement() -> None:
+    # Les pages "exports"/"imports" TE des Etats-Unis incluent les services : on lit les biens.
+    assert trade_indicator_slugs("united-states") == {"Export": "goods-exports", "Import": "goods-imports"}
+    assert trade_indicator_slugs("finland") == {"Export": "exports", "Import": "imports"}
+    print("OK  test_etats_unis_biens_seulement")
+
+
 if __name__ == "__main__":
     tests = [
         test_serie_mensuelle_detectee,
@@ -99,6 +107,7 @@ if __name__ == "__main__":
         test_mapping_pays,
         test_resume_couple,
         test_conversion_te_manquante_non_comparable,
+        test_etats_unis_biens_seulement,
     ]
     failures = []
     for test in tests:
