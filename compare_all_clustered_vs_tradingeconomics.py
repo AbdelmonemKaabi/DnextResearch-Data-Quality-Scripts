@@ -32,6 +32,7 @@ import time
 import pandas as pd
 
 from compare_clustered_vs_tradingeconomics import TOLERANCE, _compare_country, resolve_te_slug
+from exchange_rate import USD_PEGGED_RATES
 from snowflake_client import run_query
 from te_scraper import SCRAPE_DELAY_SECONDS, scrape_country_trade_series
 
@@ -92,6 +93,10 @@ def _load_or_scrape_te(slug: str, refresh: bool) -> tuple[pd.DataFrame, bool]:
     if not refresh and os.path.exists(path):
         te_df = pd.read_csv(path)
         te_df["Month"] = pd.to_datetime(te_df["Month"]).dt.date
+        # Conversions manquantes dans le cache pour une devise a parite fixe (ajoutee a
+        # USD_PEGGED_RATES apres le scraping) : recalculees ici, sans reseau ni re-scraping.
+        pegged = te_df["value_usd"].isna() & te_df["currency"].isin(USD_PEGGED_RATES)
+        te_df.loc[pegged, "value_usd"] = te_df.loc[pegged, "value_original"] * te_df.loc[pegged, "currency"].map(USD_PEGGED_RATES)
         return te_df, False
 
     te_df = scrape_country_trade_series(slug)

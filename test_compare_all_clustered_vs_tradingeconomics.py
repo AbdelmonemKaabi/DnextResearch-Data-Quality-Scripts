@@ -69,8 +69,37 @@ def test_resume_couple() -> None:
     print("OK  test_resume_couple")
 
 
+def test_conversion_te_manquante_non_comparable() -> None:
+    """Une valeur TE non convertie en USD (NaN, ex: KES avant 2024) est NON_COMPARABLE
+    "te_conversion_echouee", et non additionnee a 0 (faux ecart de -100 %)."""
+    clustered = pd.DataFrame(
+        [
+            {"Month": dt.date(2020, 1, 1), "Trade Direction": "Export", "Total Value": 100.0},
+            {"Month": dt.date(2025, 1, 1), "Trade Direction": "Export", "Total Value": 100.0},
+        ]
+    )
+    te = pd.DataFrame(
+        [
+            {"Month": dt.date(2020, 1, 1), "Direction": "Export", "value_usd": float("nan")},
+            {"Month": dt.date(2025, 1, 1), "Direction": "Export", "value_usd": 101.0},
+        ]
+    )
+    result = _compare_country(clustered, te, tolerance=0.03).sort_values("Month")
+    got = list(zip(result["status"], result["reason"].fillna("")))
+    assert got == [("NON_COMPARABLE", "te_conversion_echouee"), ("MATCH", "")], got
+    summary = _summarize_pair(result)
+    assert summary["median_signed_gap"] == 0.01, f"Le mois non converti ne doit pas compter : {summary}"
+    print("OK  test_conversion_te_manquante_non_comparable")
+
+
 if __name__ == "__main__":
-    tests = [test_serie_mensuelle_detectee, test_serie_trimestrielle_rejetee, test_mapping_pays, test_resume_couple]
+    tests = [
+        test_serie_mensuelle_detectee,
+        test_serie_trimestrielle_rejetee,
+        test_mapping_pays,
+        test_resume_couple,
+        test_conversion_te_manquante_non_comparable,
+    ]
     failures = []
     for test in tests:
         try:

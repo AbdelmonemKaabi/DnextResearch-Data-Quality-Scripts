@@ -191,6 +191,7 @@ USD_PEGGED_RATES = {
     "QAR": 1 / 3.64,  # riyal qatari : 3.64 QAR = 1 USD
     "BHD": 1 / 0.376,  # dinar bahreini : 0.376 BHD = 1 USD
     "BZD": 1 / 2.0,  # dollar belizien : 2.00 BZD = 1 USD
+    "PAB": 1.0,  # balboa panameen : 1 PAB = 1 USD
 }
 
 # Source de secours pour les devises inconnues de Frankfurter (ex: EGP, ETB, MAD, NGN, PKR, TND,

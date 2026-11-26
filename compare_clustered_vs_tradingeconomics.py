@@ -233,7 +233,9 @@ def _compare_country(clustered_sub: pd.DataFrame, te_df: pd.DataFrame, tolerance
 
     te = te_df.rename(columns={"Direction": "Trade Direction", "value_usd": "value_te_usd"})
     te["Trade Direction"] = te["Trade Direction"].astype(str).str.strip().str.title()
-    te = te.groupby(["Month", "Trade Direction"], as_index=False)["value_te_usd"].sum()
+    # min_count=1 : un mois dont la conversion USD a echoue (NaN) reste NaN -> NON_COMPARABLE
+    # "te_conversion_echouee", au lieu d'etre additionne a 0 (faux ecart de -100 %).
+    te = te.groupby(["Month", "Trade Direction"], as_index=False)["value_te_usd"].sum(min_count=1)
 
     # Fenetre commune : sans abonnement, Trading Economics ne publie qu'environ 10 ans d'historique
     # (bouton 10Y) alors que Clustered peut remonter bien plus loin (1996 pour la Finlande), et

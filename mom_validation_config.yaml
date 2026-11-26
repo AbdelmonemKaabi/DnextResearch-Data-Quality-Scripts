@@ -1,0 +1,25 @@
+# Configuration de validate_month_over_month.py (controle de variation d'un mois a l'autre).
+
+# Variation maximale toleree entre un mois et son mois de reference, en fraction :
+# 0.05 = 5 %. Au-dela (hausse ou baisse), le mois est FAIL (anomalie potentielle).
+threshold: 0.05
+
+# Dataset(s) a valider (valeurs de "DataSource" dans Clustered), utilises seulement si aucun
+# dataset n'est passe en ligne de commande. "all" = tous les DataSources de Clustered.
+datasets:
+  - dnexr-dnexr-all-fin-tf-customs-bilateral-monthly
+
+# Niveau des series : une serie mensuelle par combinaison de ces colonnes.
+# Colonnes possibles : Reporter, Partner, TradeFlow, HSChapter.
+group_by:
+  - Reporter
+  - TradeFlow
+
+# Mois a valider :
+#   latest     = seulement le dernier mois de chaque serie, compare au mois precedent
+#                (controle apres chaque nouveau chargement de donnees) ;
+#   18         = les 18 derniers mois de chaque serie (n'importe quel nombre de mois) ;
+#   "YYYY-MM"  = tous les mois a partir de celui-ci (entre guillemets) ;
+#   vide       = tout l'historique.
+# Remplacable pour un seul run en ligne de commande : --start-month 18
+start_month: latest
