@@ -100,6 +100,30 @@ python compare_dataset_vs_tradingeconomics.py --file ma_liste.xlsx
 
 - Le cache `te_cache/` est partagé avec `compare_all_clustered_vs_tradingeconomics.py`.
 - Sorties : `dataset_vs_tradingeconomics_result.xlsx` (feuilles `Resume` et `Detail`), plus les mêmes en CSV (`..._result.csv`, `..._summary.csv`). `--output autre_nom` change le début du nom des fichiers.
+- Base locale : le détail et le résumé sont aussi enregistrés dans la base SQL Server (tables `dbo.dataset_vs_clustered` et `dbo.dataset_vs_clustered_summary`), voir [Base SQL Server des résultats](#base-sql-server-des-résultats).
+
+## Base SQL Server des résultats
+
+Chaque script de comparaison ajoute ses résultats dans la base SQL Server `Dnext vs TE` de l'instance `.\SQLEXPRESS` (`results_db.py`, authentification Windows, pilote « ODBC Driver 18 for SQL Server »), dans ses propres tables, créées au premier passage :
+
+| Script | Table(s) |
+|---|---|
+| `compare_aggregated_sources.py` | `dbo.aggregated_dataset_vs_clustered` |
+| `compare_dataset_vs_tradingeconomics.py` | `dbo.dataset_vs_clustered`, `dbo.dataset_vs_clustered_summary` |
+| `compare_clustered_vs_tradingeconomics.py` | `dbo.clustered_vs_tradingeconomics` |
+| `compare_all_clustered_vs_tradingeconomics.py` | `dbo.all_clustered_vs_tradingeconomics`, `dbo.all_clustered_vs_tradingeconomics_summary` |
+| `check_months_vs_tradingeconomics.py` | `dbo.month_checks_clustered_vs_tradingeconomics` |
+
+- Les fichiers CSV/Excel restent écrits comme avant ; la base s'y ajoute.
+- Chaque exécution ajoute ses lignes sans effacer les précédentes, avec la date d'exécution dans `run_at` (la même pour le détail et le résumé d'une exécution).
+- Les écarts (`pct_diff`, `pct_diff_*`, `match_pct`, `median_*_gap`, `max_abs_gap`) y sont en pourcentage positif : `10.5` pour 10,5 %, que la source comparée soit au-dessus ou en dessous.
+- Une colonne apparue dans un script est ajoutée à sa table au passage suivant.
+- Dernière exécution d'une table, par exemple :
+  ```sql
+  SELECT * FROM dbo.month_checks_clustered_vs_tradingeconomics
+  WHERE run_at = (SELECT MAX(run_at) FROM dbo.month_checks_clustered_vs_tradingeconomics);
+  ```
+- Instance ou nom de base différents : `SQL_SERVER` et `DATABASE` en haut de `results_db.py`. Nom d'une table : constante `DB_TABLE` (et `DB_SUMMARY_TABLE`) en haut du script.
 
 ## Vérifier des mois précis contre Trading Economics
 
@@ -122,6 +146,8 @@ Sans chemin en argument, le script lit `INPUT_FILE` (en haut du script, `month_c
 - Le pays vient du dataset (son `Reporter` dans Clustered) ; un dataset multi-pays est `NON_COMPARABLE` (`pays_indetermine`).
 - Clustered est interrogé en direct ; Trading Economics vient du cache `te_cache/`.
 - `NON_COMPARABLE` : mois absent d'une des sources (`absent_clustered`, `absent_te`), ou pays sans série Export/Import sur Trading Economics (`te_vide`, ex. Éthiopie). La colonne `ratio_te_clustered` (TE / Clustered) fait ressortir une erreur d'échelle : un ratio proche de 1000 indique une valeur chargée en milliers.
+- Colonnes `te_source` (page(s) Trading Economics utilisée(s)) et `te_condition` (ex. `Export`, `Export goods`, `Export non oil petroleum (avec re-exportations)`) : contre quoi la valeur Clustered a été comparée.
+- Variantes (`TE_FALLBACKS`) : pour l'Arabie saoudite, un `MISMATCH` à l'export est réessayé sur `non-oil-exports` (non-pétrole sans réexportations), puis sur `exports - oil-exports` (non-pétrole avec réexportations, le périmètre des données douanières GASTAT). La première variante qui correspond est retenue ; sinon le résultat de base est gardé et `reason` liste les variantes essayées. Les pages supplémentaires sont en cache dans `te_cache/<pays>__<page>.csv`.
 - Sortie : `month_checks_result.xlsx` (filtres, en-tête figé, montants formatés).
 
 ## Pages Trading Economics lues

@@ -15,12 +15,15 @@ import unicodedata
 import pandas as pd
 import pycountry
 
+from results_db import save_run
 from snowflake_client import run_query
 from te_scraper import SCRAPE_DELAY_SECONDS, scrape_country_trade_series
 
 DATA_SOURCE = "dnexr-dnexr-all-fin-tf-customs-bilateral-monthly"
 TOLERANCE = 0.15
 OUTPUT_FILE = "clustered_vs_tradingeconomics_result.csv"
+# Table de la base SQL Server locale (results_db) ou chaque execution ajoute son resultat.
+DB_TABLE = "clustered_vs_tradingeconomics"
 
 
 def with_percent_text(df: pd.DataFrame, columns=("pct_diff",)) -> pd.DataFrame:
@@ -365,6 +368,7 @@ if __name__ == "__main__":
         combined = pd.concat(all_results, ignore_index=True)
         with_percent_text(combined).to_csv(OUTPUT_FILE, index=False)
         print(f"\nResultat exporte dans {OUTPUT_FILE} ({len(combined)} ligne(s), {len(all_results)} pays)")
+        save_run({DB_TABLE: combined})
 
         print("\n=== Resume ===")
         print(f"Pays traites avec succes : {len(all_results)} / {len(mapped_countries)} mappe(s)")

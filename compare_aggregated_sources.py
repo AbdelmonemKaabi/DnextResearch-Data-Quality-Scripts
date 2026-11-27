@@ -9,7 +9,11 @@ import pandas as pd
 import yaml
 
 from exchange_rate import ExchangeRateError, get_monthly_usd_rate, get_mop_to_usd_rate
+from results_db import save_run
 from snowflake_client import run_query
+
+# Table de la base SQL Server locale (results_db) ou chaque execution ajoute son resultat.
+DB_TABLE = "aggregated_dataset_vs_clustered"
 
 DATASETS_CONFIG_FILE = "datasets_config.yaml"
 
@@ -651,6 +655,8 @@ if __name__ == "__main__":
             f"Ecarts exportes dans aggregated_comparison_mismatches_only.csv "
             f"({len(mismatches_only)} ligne(s) : MISMATCH quantite/valeur ou groupe present d'un seul cote)"
         )
+        # Les ecarts se filtrent en SQL (status_* = 'MISMATCH' ou presence <> 'both') : une seule table.
+        save_run({DB_TABLE: combined})
 
     if failed_datasets:
         print(f"\nDatasets en echec (ignores) : {failed_datasets}")

@@ -70,6 +70,7 @@ from compare_all_clustered_vs_tradingeconomics import (
     _summarize_pair,
 )
 from compare_clustered_vs_tradingeconomics import COUNTRY_CODES_QUERY, TOLERANCE, _compare_country, resolve_te_slug, with_percent_text
+from results_db import save_run
 from snowflake_client import run_query
 
 
@@ -80,6 +81,11 @@ MISSING_CURRENCIES = {"", "N/A", "NA", "NAN", "NONE"}
 # Ratio TE / dataset au-dela duquel (ou en deca de son inverse) un mois est signale : un tel
 # ecart vient d'une erreur d'echelle (milliers, millions) ou de devise, pas d'une revision.
 ABERRANT_RATIO = 3.0
+
+# Tables de la base SQL Server locale (results_db.DATABASE) ou chaque execution ajoute son detail
+# mensuel et son resume par dataset.
+DB_TABLE = "dataset_vs_clustered"
+DB_SUMMARY_TABLE = "dataset_vs_clustered_summary"
 
 DATASET_MONTHLY_QUERY_TEMPLATE = """
 WITH BASE_DATA AS (
@@ -580,6 +586,8 @@ def main() -> None:
         print(f"Detail mensuel exporte dans {output_file}")
     save_excel(result_df, summary_df, excel_file)
     print(f"Classeur Excel (feuilles Resume et Detail) : {excel_file}")
+
+    save_run({DB_TABLE: result_df, DB_SUMMARY_TABLE: summary_df})
 
 
 if __name__ == "__main__":

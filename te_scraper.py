@@ -82,6 +82,8 @@ INDICATORS = {
     "imports": "Imports",
     "goods-exports": "Goods Exports",
     "goods-imports": "Goods Imports",
+    "oil-exports": "Oil Exports",
+    "non-oil-exports": "Non Oil Exports",
 }
 
 # Pays dont les pages Trading Economics "exports"/"imports" incluent les services (base balance
@@ -407,61 +409,67 @@ def _convert_to_usd(value: float, currency: str, year: int, month: int) -> float
 SCRAPE_DELAY_SECONDS = 5
 
 
-def scrape_country_trade_series(country_slug: str, wait_seconds: float = 4.0):
-    """Combine table (unite Export/Import) et graphique (historique complet) pour un pays.
+TRADE_SERIES_COLUMNS = ["Country", "Month", "Direction", "value_original", "currency", "value_usd"]
 
-    Renvoie un pandas DataFrame avec les colonnes :
-    Country, Month, Direction, value_original, currency, value_usd.
 
-    value_original = valeur brute du graphique * multiplicateur d'echelle (donc en devise
-    d'origine, unites reelles -- pas encore convertie USD). value_usd = value_original convertie
-    via _convert_to_usd ; NaN pour un point dont la conversion a echoue (voir ci-dessous), avec
-    un avertissement affiche plutot qu'une exception qui interromprait tout le pays.
+def scrape_indicator_series(country_slug: str, indicator_slug: str, direction: str, table_data: dict = None,
+                            wait_seconds: float = 4.0):
+    """Serie historique d'un indicateur Trading Economics (ex: "exports", "non-oil-exports"), en USD.
 
-    Hypothese : l'unite (devise + echelle) d'un indicateur ne change pas dans le temps pour un
-    pays donne -- on l'applique donc a toute la serie historique du graphique. A revoir si un
-    jour un pays presente un changement d'unite en cours d'historique.
+    L'unite (devise + echelle) vient de la table de la page balance-of-trade (`table_data`, lue si
+    absente), la serie du graphique de la page de l'indicateur. Renvoie un DataFrame aux colonnes
+    TRADE_SERIES_COLUMNS, vide (avec un avertissement) si l'unite est introuvable ou inattendue.
+
+    value_original = valeur brute du graphique * multiplicateur d'echelle (devise d'origine, unites
+    reelles). value_usd = value_original convertie via _convert_to_usd ; NaN pour un point dont la
+    conversion a echoue, avec un avertissement plutot qu'une exception qui interromprait tout le pays.
+
+    Hypothese : l'unite d'un indicateur ne change pas dans le temps pour un pays donne -- on
+    l'applique donc a toute la serie historique du graphique.
     """
     import pandas as pd
 
-    table_data = get_balance_of_trade(country_slug)
+    if table_data is None:
+        table_data = get_balance_of_trade(country_slug)
+    indicator_name = INDICATORS[indicator_slug]
+    indicator = table_data.get(indicator_name)
+    if indicator is None or not indicator.get("unit"):
+        print(f"[AVERTISSEMENT] {country_slug} : unite introuvable pour {indicator_name}, serie ignoree.")
+        return pd.DataFrame(columns=TRADE_SERIES_COLUMNS)
+    try:
+        currency, scale = _parse_unit(indicator["unit"])
+    except ValueError as exc:
+        print(f"[AVERTISSEMENT] {country_slug}/{indicator_name} : {exc} -- serie ignoree.")
+        return pd.DataFrame(columns=TRADE_SERIES_COLUMNS)
 
     rows = []
-    for direction, indicator_slug in trade_indicator_slugs(country_slug).items():
-        indicator_name = INDICATORS[indicator_slug]
-        indicator = table_data.get(indicator_name)
-        if indicator is None or not indicator.get("unit"):
-            print(f"[AVERTISSEMENT] {country_slug} : unite introuvable pour {indicator_name}, pays ignore pour cette direction.")
-            continue
-
+    for date, raw_value in scrape_highcharts_series(f"{country_slug}/{indicator_slug}", wait_seconds=wait_seconds):
+        month = date.replace(day=1)
+        value_original = raw_value * scale
         try:
-            currency, scale = _parse_unit(indicator["unit"])
-        except ValueError as exc:
-            print(f"[AVERTISSEMENT] {country_slug}/{indicator_name} : {exc} -- direction ignoree.")
-            continue
+            value_usd = _convert_to_usd(value_original, currency, month.year, month.month)
+        except ExchangeRateError as exc:
+            print(f"[AVERTISSEMENT] {country_slug} {indicator_slug} {month} : conversion USD echouee ({exc}), value_usd=NaN.")
+            value_usd = float("nan")
+        rows.append({
+            "Country": country_slug, "Month": month, "Direction": direction,
+            "value_original": value_original, "currency": currency, "value_usd": value_usd,
+        })
+    return pd.DataFrame(rows, columns=TRADE_SERIES_COLUMNS)
 
-        page_path = f"{country_slug}/{indicator_slug}"
-        series = scrape_highcharts_series(page_path, wait_seconds=wait_seconds)
 
-        for date, raw_value in series:
-            month = date.replace(day=1)
-            value_original = raw_value * scale
-            try:
-                value_usd = _convert_to_usd(value_original, currency, month.year, month.month)
-            except ExchangeRateError as exc:
-                print(f"[AVERTISSEMENT] {country_slug} {direction} {month} : conversion USD echouee ({exc}), value_usd=NaN.")
-                value_usd = float("nan")
+def scrape_country_trade_series(country_slug: str, wait_seconds: float = 4.0):
+    """Series Export et Import d'un pays (pages de trade_indicator_slugs), en un DataFrame aux
+    colonnes TRADE_SERIES_COLUMNS. Voir scrape_indicator_series pour l'unite et la conversion USD."""
+    import pandas as pd
 
-            rows.append({
-                "Country": country_slug,
-                "Month": month,
-                "Direction": direction,
-                "value_original": value_original,
-                "currency": currency,
-                "value_usd": value_usd,
-            })
-
-    return pd.DataFrame(rows, columns=["Country", "Month", "Direction", "value_original", "currency", "value_usd"])
+    table_data = get_balance_of_trade(country_slug)
+    frames = [
+        scrape_indicator_series(country_slug, indicator_slug, direction, table_data, wait_seconds)
+        for direction, indicator_slug in trade_indicator_slugs(country_slug).items()
+    ]
+    frames = [f for f in frames if not f.empty]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=TRADE_SERIES_COLUMNS)
 
 
 def build_comparison_dataframe(country_slugs, wait_seconds: float = 4.0):

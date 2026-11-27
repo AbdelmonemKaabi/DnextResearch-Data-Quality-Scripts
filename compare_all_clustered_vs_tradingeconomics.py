@@ -33,6 +33,7 @@ import pandas as pd
 
 from compare_clustered_vs_tradingeconomics import TOLERANCE, _compare_country, resolve_te_slug, with_percent_text
 from exchange_rate import USD_PEGGED_RATES
+from results_db import save_run
 from snowflake_client import run_query
 from te_scraper import SCRAPE_DELAY_SECONDS, scrape_country_trade_series
 
@@ -50,6 +51,9 @@ TE_CACHE_DIR = "te_cache"
 MAX_MONTHLY_GAP_DAYS = 45
 
 OUTPUT_FILE = "all_clustered_vs_tradingeconomics_result.csv"
+# Tables de la base SQL Server locale (results_db) ou chaque execution ajoute son detail et son resume.
+DB_TABLE = "all_clustered_vs_tradingeconomics"
+DB_SUMMARY_TABLE = "all_clustered_vs_tradingeconomics_summary"
 SUMMARY_FILE = "all_clustered_vs_tradingeconomics_summary.csv"
 
 ALL_CLUSTERED_MONTHLY_QUERY = """
@@ -226,6 +230,9 @@ def main() -> None:
             print(f"  {status:15s}: {n} ({n / len(combined) * 100:.2f}%)")
     else:
         print("\n[ATTENTION] Aucun couple compare.", summary["status"].value_counts().to_dict() if len(summary) else "")
+
+    detail = pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame()
+    save_run({DB_TABLE: detail, DB_SUMMARY_TABLE: summary})
 
 
 if __name__ == "__main__":

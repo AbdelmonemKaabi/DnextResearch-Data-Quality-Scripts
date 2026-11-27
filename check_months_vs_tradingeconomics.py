@@ -15,6 +15,11 @@ Le pays n'est pas dans le fichier : c'est le Reporter que Clustered associe au d
 que compare_dataset_vs_tradingeconomics.py). Un dataset multi-pays est NON_COMPARABLE
 (pays_indetermine).
 
+Pour certains pays (TE_FALLBACKS), un MISMATCH est reessaye sur d'autres series Trading Economics,
+dans l'ordre, jusqu'au premier MATCH. Les colonnes te_source (page(s) TE utilisee(s)) et
+te_condition (ex: "Export", "Export goods", "Export non oil petroleum") disent contre quoi la
+valeur Clustered a ete comparee.
+
 Usage :
     python check_months_vs_tradingeconomics.py                    # fichier INPUT_FILE
     python check_months_vs_tradingeconomics.py ma_liste.xlsx
@@ -31,13 +36,38 @@ import pandas as pd
 from compare_all_clustered_vs_tradingeconomics import COMPARED_FLOWS, _load_or_scrape_te
 from compare_clustered_vs_tradingeconomics import TOLERANCE, resolve_te_slug
 from compare_dataset_vs_tradingeconomics import country_from_name
+from results_db import save_run
 from snowflake_client import run_query
+from te_scraper import scrape_indicator_series, trade_indicator_slugs
 
 # Fichier de verifications lu quand aucun chemin n'est passe en ligne de commande (bouton Run de
 # l'editeur). Chemin relatif au dossier du terminal, ou absolu (ex: r"C:\Users\...\liste.xlsx").
 INPUT_FILE = r"C:\Users\Abdelmonem\Downloads\Customs datasets – potential outlier months.xlsx"
 OUTPUT_FILE = "month_checks_result.xlsx"
+# Table de la base SQL Server locale (results_db) ou chaque execution ajoute son resultat.
+DB_TABLE = "month_checks_clustered_vs_tradingeconomics"
 INPUT_COLUMNS = {"dataset": "Dataset", "month": "Month", "trade direction": "Trade Direction"}
+TE_CACHE_DIR = "te_cache"
+
+# Libelle de te_condition pour la serie Trading Economics de base (voir te_scraper.trade_indicator_slugs).
+CONDITION_LABELS = {
+    "exports": "Export", "imports": "Import",
+    "goods-exports": "Export goods", "goods-imports": "Import goods",
+}
+
+# Series Trading Economics essayees, dans l'ordre, quand la serie de base donne un MISMATCH.
+# Chaque essai est une somme de pages TE (signe +1/-1) ; le premier MATCH est retenu.
+#   Arabie saoudite : "exports" inclut le petrole, absent des donnees douanieres GASTAT.
+#   "non-oil-exports" exclut aussi les re-exportations ; "exports - oil-exports" est le non-petrole
+#   AVEC re-exportations, perimetre qui correspond a Clustered (ecart < 2 % en 2025-2026).
+TE_FALLBACKS = {
+    "saudi-arabia": {
+        "Export": [
+            {"condition": "Export non oil petroleum (hors re-exportations)", "terms": [(1, "non-oil-exports")]},
+            {"condition": "Export non oil petroleum (avec re-exportations)", "terms": [(1, "exports"), (-1, "oil-exports")]},
+        ],
+    },
+}
 
 # Deux requetes pour tout le fichier (et non deux par dataset) : la table Clustered est lue une
 # seule fois par requete, quel que soit le nombre de datasets a verifier.
@@ -122,42 +152,107 @@ def fetch_clustered_totals(datasets: list[str], months: list[pd.Timestamp]) -> p
     return df
 
 
-def compare_checks(checks: pd.DataFrame, clustered: pd.DataFrame, te_df: pd.DataFrame) -> pd.DataFrame:
+def _compare_value(value_cl: float | None, te_points: pd.DataFrame) -> dict:
+    """Compare une valeur Clustered aux points TE du meme mois et de la meme direction."""
+    value_te = float(te_points["value_usd"].iloc[0]) if len(te_points) == 1 else None
+    ratio = pct_diff = None
+    if value_cl is None:
+        status, reason = "NON_COMPARABLE", "absent_clustered"
+    elif len(te_points) == 0:
+        status, reason = "NON_COMPARABLE", "absent_te"
+    elif len(te_points) > 1:
+        status, reason = "NON_COMPARABLE", "te_mois_en_double"
+    elif pd.isna(value_te):
+        status, reason = "NON_COMPARABLE", "te_conversion_echouee"
+    elif value_cl == 0:
+        status, reason = ("MATCH", "") if value_te == 0 else ("NON_COMPARABLE", "clustered_value_zero")
+    else:
+        ratio = value_te / value_cl
+        pct_diff = abs(value_te - value_cl) / abs(value_cl)
+        status, reason = ("MATCH" if pct_diff <= TOLERANCE else "MISMATCH"), ""
+    return {"value_te_usd": value_te, "ratio_te_clustered": ratio, "pct_diff": pct_diff, "status": status, "reason": reason}
+
+
+def compare_checks(checks: pd.DataFrame, clustered: pd.DataFrame, variants: dict) -> pd.DataFrame:
     """Une ligne par (Month, Trade Direction) demande, meme si une des sources n'a pas ce mois.
+
+    `variants` : {direction: [variante, ...]}, variante = {"source", "condition", "series"} ou
+    `series` a les colonnes Month, value_usd. La premiere variante est la serie TE de base ; les
+    suivantes ne sont essayees que si la base donne un MISMATCH, jusqu'au premier MATCH. Si aucune
+    ne correspond, le resultat de base est garde et `reason` liste les variantes essayees.
 
     ratio_te_clustered = TE / Clustered : un ratio proche de 1000 ou 0,001 signale une valeur
     chargee dans la mauvaise echelle (milliers, millions) plutot qu'un vrai ecart.
     """
-    te = te_df.assign(Month=pd.to_datetime(te_df["Month"]))
     rows = []
     for _, check in checks.iterrows():
         month, direction = check["Month"], check["Trade Direction"]
         cl = clustered[(clustered["Month"] == month) & (clustered["Trade Direction"] == direction)]
-        te_points = te[(te["Month"] == month) & (te["Direction"] == direction)]
         value_cl = float(cl["Total Value"].sum()) if len(cl) else None
-        value_te = float(te_points["value_usd"].iloc[0]) if len(te_points) == 1 else None
 
-        ratio = pct_diff = None
-        if value_cl is None:
-            status, reason = "NON_COMPARABLE", "absent_clustered"
-        elif len(te_points) == 0:
-            status, reason = "NON_COMPARABLE", "absent_te"
-        elif len(te_points) > 1:
-            status, reason = "NON_COMPARABLE", "te_mois_en_double"
-        elif pd.isna(value_te):
-            status, reason = "NON_COMPARABLE", "te_conversion_echouee"
-        elif value_cl == 0:
-            status, reason = ("MATCH", "") if value_te == 0 else ("NON_COMPARABLE", "clustered_value_zero")
-        else:
-            ratio = value_te / value_cl
-            pct_diff = abs(value_te - value_cl) / abs(value_cl)
-            status, reason = ("MATCH" if pct_diff <= TOLERANCE else "MISMATCH"), ""
+        candidates = variants[direction]
+        chosen = candidates[0]
+        result = _compare_value(value_cl, chosen["series"][chosen["series"]["Month"] == month])
+        if result["status"] == "MISMATCH" and len(candidates) > 1:
+            for variant in candidates[1:]:
+                attempt = _compare_value(value_cl, variant["series"][variant["series"]["Month"] == month])
+                if attempt["status"] == "MATCH":
+                    chosen, result = variant, attempt
+                    break
+            else:
+                result["reason"] = "aucune variante ne correspond : " + " ; ".join(v["condition"] for v in candidates)
         rows.append({
-            "Month": month.date(), "Trade Direction": direction,
-            "value_clustered_usd": value_cl, "value_te_usd": value_te,
-            "ratio_te_clustered": ratio, "pct_diff": pct_diff, "status": status, "reason": reason,
+            "Month": month.date(), "Trade Direction": direction, "value_clustered_usd": value_cl,
+            **result, "te_source": chosen["source"], "te_condition": chosen["condition"],
         })
     return pd.DataFrame(rows)
+
+
+def _load_or_scrape_indicator(slug: str, indicator: str, refresh: bool) -> pd.DataFrame:
+    """Serie TE d'une page (ex: saudi-arabia/non-oil-exports), en cache te_cache/<slug>__<page>.csv."""
+    path = os.path.join(TE_CACHE_DIR, f"{slug}__{indicator}.csv")
+    if not refresh and os.path.exists(path):
+        df = pd.read_csv(path)
+    else:
+        df = scrape_indicator_series(slug, indicator, direction="")
+        if not df.empty:
+            os.makedirs(TE_CACHE_DIR, exist_ok=True)
+            df.to_csv(path, index=False)
+    return df.assign(Month=pd.to_datetime(df["Month"]))[["Month", "value_usd"]]
+
+
+def _sum_terms(slug: str, terms: list[tuple[int, str]], refresh: bool) -> pd.DataFrame:
+    """Somme signee de pages TE par mois ; un mois absent d'une des pages est absent du resultat."""
+    total = None
+    for sign, indicator in terms:
+        term = _load_or_scrape_indicator(slug, indicator, refresh)
+        term = term.assign(value_usd=sign * term["value_usd"])
+        if total is None:
+            total = term
+        else:
+            merged = total.merge(term, on="Month", suffixes=("", "_term"))
+            total = merged.assign(value_usd=merged["value_usd"] + merged["value_usd_term"])[["Month", "value_usd"]]
+    return total
+
+
+def build_variants(slug: str, te_df: pd.DataFrame, refresh: bool) -> dict:
+    """Variantes TE par direction : la serie de base (te_df) puis les essais de TE_FALLBACKS."""
+    te = te_df.assign(Month=pd.to_datetime(te_df["Month"]))
+    variants = {}
+    for direction, indicator in trade_indicator_slugs(slug).items():
+        variants[direction] = [{
+            "source": f"{slug}/{indicator}",
+            "condition": CONDITION_LABELS[indicator],
+            "series": te[te["Direction"] == direction][["Month", "value_usd"]],
+        }]
+        for fallback in TE_FALLBACKS.get(slug, {}).get(direction, []):
+            source = " ".join(f"{'-' if sign < 0 else '+'} {slug}/{ind}" for sign, ind in fallback["terms"])
+            variants[direction].append({
+                "source": source.removeprefix("+ "),
+                "condition": fallback["condition"],
+                "series": _sum_terms(slug, fallback["terms"], refresh),
+            })
+    return variants
 
 
 def _not_comparable(checks: pd.DataFrame, reason: str) -> pd.DataFrame:
@@ -169,7 +264,7 @@ def _not_comparable(checks: pd.DataFrame, reason: str) -> pd.DataFrame:
 
 def check_dataset(dataset: str, checks: pd.DataFrame, codes: list[str], clustered: pd.DataFrame,
                   refresh: bool, te_cache: dict) -> pd.DataFrame:
-    """Verifications d'un dataset : pays (codes), serie TE (cache), puis comparaison avec ses totaux
+    """Verifications d'un dataset : pays (codes), series TE (cache), puis comparaison avec ses totaux
     Clustered (`clustered`, deja filtres sur le dataset)."""
     if len(codes) != 1:
         print(f"[ATTENTION] {dataset} : pays indetermine ({codes or 'aucun'}).")
@@ -182,16 +277,15 @@ def check_dataset(dataset: str, checks: pd.DataFrame, codes: list[str], clustere
     print(f"\n########## {dataset} | {code} -> {slug} | {len(checks)} verification(s) ##########")
     if slug not in te_cache:
         try:
-            te_cache[slug], scraped = _load_or_scrape_te(slug, refresh)
+            te_df, scraped = _load_or_scrape_te(slug, refresh)
             print("Trading Economics : " + ("scrape" if scraped else "cache"))
+            # te_vide : ex. Ethiopie, pas de lignes Exports/Imports dans la table Trading Economics.
+            te_cache[slug] = build_variants(slug, te_df, refresh) if not te_df.empty else "te_vide"
         except Exception as exc:
             print(f"[ERREUR] Trading Economics {slug} : {exc}")
-            te_cache[slug] = None
-    if te_cache[slug] is None:
-        return _not_comparable(checks, "te_echec").assign(Country=code)
-    if te_cache[slug].empty:
-        # Ex: Ethiopie, pas de lignes Exports/Imports dans la table Trading Economics.
-        return _not_comparable(checks, "te_vide").assign(Country=code)
+            te_cache[slug] = "te_echec"
+    if isinstance(te_cache[slug], str):
+        return _not_comparable(checks, te_cache[slug]).assign(Country=code)
 
     return compare_checks(checks, clustered[clustered["Country"] == code], te_cache[slug]).assign(Country=code)
 
@@ -247,7 +341,8 @@ def main() -> None:
             results.append(result.assign(Dataset=dataset))
 
     keys = list(INPUT_COLUMNS.values())
-    result_columns = ["Country", "value_clustered_usd", "value_te_usd", "ratio_te_clustered", "pct_diff", "status", "reason"]
+    result_columns = ["Country", "value_clustered_usd", "value_te_usd", "ratio_te_clustered", "pct_diff", "status", "reason",
+                      "te_source", "te_condition"]
     found = pd.concat(results, ignore_index=True) if results else pd.DataFrame(columns=keys + result_columns)
     found["Month"] = pd.to_datetime(found["Month"])
     # Jointure sur le fichier d'entree : meme ordre de lignes, colonnes d'origine (Type, Severity...) gardees.
@@ -262,6 +357,8 @@ def main() -> None:
     with pd.option_context("display.width", 250, "display.max_columns", None, "display.float_format", "{:,.4f}".format):
         print("\n" + combined[keys + result_columns].to_string(index=False))
     print(f"\nResultat exporte dans {OUTPUT_FILE} ({len(combined)} ligne(s)) : {combined['status'].value_counts().to_dict()}")
+    # Month en date (1er du mois) dans la base, pour trier et filtrer en SQL.
+    save_run({DB_TABLE: combined.assign(Month=pd.to_datetime(combined["Month"]).dt.date)})
 
 
 if __name__ == "__main__":
