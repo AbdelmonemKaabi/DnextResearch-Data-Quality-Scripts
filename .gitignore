@@ -5,4 +5,4 @@ __pycache__/
 *.csv
 month_checks_result.xlsx
 ~$*
-dataset_vs_tradingeconomics_result.xlsx
+dataset_vs_tradingeconomics*_result.xlsx

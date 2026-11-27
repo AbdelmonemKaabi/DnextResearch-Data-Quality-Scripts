@@ -38,6 +38,33 @@ ABSENT_REASONS = {"snowflake_only": "absent_clustered", "clustered_only": "absen
 # colonne Currency n'y est pas remplie). Toute autre devise explicite (EUR, CHF...) est un ecart.
 CLUSTERED_ACCEPTED_CURRENCIES = {"USD", "N/A", "", "NAN", "NONE"}
 
+# Colonnes d'ecart en pourcentage, gardees en fraction dans les DataFrames (0.0257 = 2,57 %) et
+# ecrites en texte "+2.57%" dans les CSV (lisible tel quel, et reconnu comme pourcentage par Excel).
+# Les ecarts pct_diff* sont signes : (source comparee - reference) / reference, donc positif quand
+# la source comparee est au-dessus (dataset > Clustered ici, TE > dataset ou Clustered ailleurs).
+SIGNED_PERCENT_COLUMNS = (
+    "pct_diff", "pct_diff_records", "pct_diff_quantity", "pct_diff_quantity2", "pct_diff_value", "median_signed_gap",
+)
+UNSIGNED_PERCENT_COLUMNS = ("match_pct", "median_abs_gap", "max_abs_gap")
+EXCEL_SIGNED_PERCENT_FORMAT = '+0.00%;-0.00%;0.00%'
+
+
+def percent_text(value, signed: bool = True) -> str:
+    """0.0257 -> "+2.57%", -0.05 -> "-5.00%", 0 -> "0.00%", vide -> ""."""
+    if value is None or pd.isna(value):
+        return ""
+    text = f"{float(value) * 100:+.2f}%" if signed else f"{float(value) * 100:.2f}%"
+    return "0.00%" if text in ("+0.00%", "-0.00%") else text
+
+
+def with_percent_text(df: pd.DataFrame) -> pd.DataFrame:
+    """Copie de `df` avec les colonnes d'ecart en texte "+2.57%", pour l'export CSV."""
+    out = df.copy()
+    for col in SIGNED_PERCENT_COLUMNS + UNSIGNED_PERCENT_COLUMNS:
+        if col in out.columns:
+            out[col] = out[col].map(lambda v, signed=col in SIGNED_PERCENT_COLUMNS: percent_text(v, signed))
+    return out
+
 # Seuil d'ecart absolu (unite canonique apres normalisation, ex: KG pour le poids -> 10 grammes)
 # en dessous duquel une ligne MISMATCH quantite recoit un tag informatif "arrondi possible" dans
 # reason_quantity/reason_quantity2. Seuil flat, applique tel quel quelle que soit la famille
@@ -439,6 +466,9 @@ def _compare_metric(
       3. 0 des deux cotes -> MATCH ; clustered a 0 seul -> NON_COMPARABLE ;
       4. sinon ecart relatif compare a `tolerance` -> MATCH/MISMATCH, avec le tag informatif
          "arrondi possible" si `tag_small_abs_diff` et ecart absolu < SMALL_ABSOLUTE_QTY_THRESHOLD.
+
+    pct_diff est signe, (Snowflake - Clustered) / Clustered : +0.05 = dataset 5 % au-dessus de
+    Clustered, -0.03 = dataset 3 % en dessous. Le statut compare l'ecart absolu a `tolerance`.
     """
     pct_diffs, statuses, reasons = [], [], []
     for _, row in merged.iterrows():
@@ -459,9 +489,9 @@ def _compare_metric(
             statuses.append("NON_COMPARABLE")
             reasons.append(f"clustered_{metric_name}_zero")
         else:
-            pct_diff = abs(snowflake_val - clustered_val) / abs(clustered_val)
+            pct_diff = (snowflake_val - clustered_val) / abs(clustered_val)
             pct_diffs.append(pct_diff)
-            status = "MATCH" if pct_diff <= tolerance else "MISMATCH"
+            status = "MATCH" if abs(pct_diff) <= tolerance else "MISMATCH"
             statuses.append(status)
             reason = ""
             if (
@@ -628,7 +658,7 @@ if __name__ == "__main__":
 
     if all_results:
         combined = pd.concat(all_results, ignore_index=True)
-        combined.to_csv("aggregated_comparison_result.csv", index=False)
+        with_percent_text(combined).to_csv("aggregated_comparison_result.csv", index=False)
         print(
             f"\nResultat exporte dans aggregated_comparison_result.csv "
             f"({len(combined)} lignes, {len(all_results)} dataset(s))"
@@ -646,7 +676,7 @@ if __name__ == "__main__":
             | (combined["presence"] != "both")
         )
         mismatches_only = combined[mismatch_mask]
-        mismatches_only.to_csv("aggregated_comparison_mismatches_only.csv", index=False)
+        with_percent_text(mismatches_only).to_csv("aggregated_comparison_mismatches_only.csv", index=False)
         print(
             f"Ecarts exportes dans aggregated_comparison_mismatches_only.csv "
             f"({len(mismatches_only)} ligne(s) : MISMATCH quantite/valeur ou groupe present d'un seul cote)"

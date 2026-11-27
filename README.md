@@ -42,6 +42,18 @@ python compare_aggregated_sources.py
 
 Un dataset en échec (table Snowflake introuvable, etc.) est loggé et ignoré, sans bloquer les autres. Résultat combiné écrit dans `aggregated_comparison_result.csv` (colonne `Dataset` en premier), résumé affiché dans le terminal pour chaque dataset.
 
+## Lire les écarts en pourcentage (`pct_diff`)
+
+Dans tous les scripts de comparaison, `pct_diff` (et `pct_diff_value`, `pct_diff_quantity`...) est un écart **signé**, écrit en pourcentage dans les CSV et les classeurs Excel (`+2.57%`, `-5.00%`) :
+
+| Script | Calcul | `+3.00%` veut dire | `-5.00%` veut dire |
+|---|---|---|---|
+| `compare_aggregated_sources.py` | (dataset − Clustered) / Clustered | dataset 3 % au-dessus de Clustered | dataset 5 % en dessous de Clustered |
+| `compare_dataset_vs_tradingeconomics.py` | (TE − dataset) / dataset | Trading Economics 3 % au-dessus du dataset | Trading Economics 5 % en dessous du dataset |
+| `compare_clustered_vs_tradingeconomics.py`, `compare_all_...`, `check_months_...` | (TE − Clustered) / Clustered | Trading Economics 3 % au-dessus de Clustered | Trading Economics 5 % en dessous de Clustered |
+
+Le statut `MATCH` / `MISMATCH` compare l'écart sans son signe au seuil de 3 % (`-3.00%` et `+3.00%` sont des `MATCH`). Dans les résumés, `median_signed_gap` suit le même signe ; `match_pct`, `median_abs_gap` et `max_abs_gap` sont sans signe.
+
 ## Comparer un dataset source à Trading Economics
 
 ```

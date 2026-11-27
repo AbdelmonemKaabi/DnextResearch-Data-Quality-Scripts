@@ -108,6 +108,7 @@ def test_inventaire_et_notes_devises() -> None:
     ])
     inventory = currency_inventory(raw)
     assert inventory == {"USD": 2, "EUR": 1, "N/A": 1}, inventory
+    assert currency_inventory(_raw([])) == {}, "Periode sans donnees (ex: Guatemala en 2026) : inventaire vide, pas d'erreur"
     empty = pd.DataFrame(columns=["Month", "Trade Direction", "conversion_errors", "flag"])
     notes = " | ".join(dataset_notes(inventory, "TND", empty))
     assert "plusieurs devises : USD (2 mois/sens), EUR (1 mois/sens)" in notes, notes

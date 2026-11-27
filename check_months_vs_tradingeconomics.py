@@ -28,6 +28,7 @@ import os
 
 import pandas as pd
 
+from compare_aggregated_sources import EXCEL_SIGNED_PERCENT_FORMAT, with_percent_text
 from compare_all_clustered_vs_tradingeconomics import COMPARED_FLOWS, _load_or_scrape_te
 from compare_clustered_vs_tradingeconomics import TOLERANCE, resolve_te_slug
 from compare_dataset_vs_tradingeconomics import country_from_name
@@ -150,8 +151,8 @@ def compare_checks(checks: pd.DataFrame, clustered: pd.DataFrame, te_df: pd.Data
             status, reason = ("MATCH", "") if value_te == 0 else ("NON_COMPARABLE", "clustered_value_zero")
         else:
             ratio = value_te / value_cl
-            pct_diff = abs(value_te - value_cl) / abs(value_cl)
-            status, reason = ("MATCH" if pct_diff <= TOLERANCE else "MISMATCH"), ""
+            pct_diff = (value_te - value_cl) / abs(value_cl)  # signe : positif quand TE est au-dessus
+            status, reason = ("MATCH" if abs(pct_diff) <= TOLERANCE else "MISMATCH"), ""
         if len(te_points) > 1 and reason == "":
             reason = "te_mois_en_double_dernier_point_garde"
         rows.append({
@@ -205,7 +206,7 @@ def save_excel(df: pd.DataFrame, path: str) -> None:
 
     number_formats = {
         "value_clustered_usd": "#,##0", "value_te_usd": "#,##0",
-        "ratio_te_clustered": "0.000", "pct_diff": "0.00%",
+        "ratio_te_clustered": "0.000", "pct_diff": EXCEL_SIGNED_PERCENT_FORMAT,
     }
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Resultat")
@@ -262,7 +263,7 @@ def main() -> None:
 
     save_excel(combined, OUTPUT_FILE)
     with pd.option_context("display.width", 250, "display.max_columns", None, "display.float_format", "{:,.4f}".format):
-        print("\n" + combined[keys + result_columns].to_string(index=False))
+        print("\n" + with_percent_text(combined[keys + result_columns]).to_string(index=False))
     print(f"\nResultat exporte dans {OUTPUT_FILE} ({len(combined)} ligne(s)) : {combined['status'].value_counts().to_dict()}")
 
 

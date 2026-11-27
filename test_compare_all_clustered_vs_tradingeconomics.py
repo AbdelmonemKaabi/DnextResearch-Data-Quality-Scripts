@@ -100,6 +100,20 @@ def test_etats_unis_biens_seulement() -> None:
     print("OK  test_etats_unis_biens_seulement")
 
 
+def test_ecart_signe() -> None:
+    """pct_diff = (TE - Clustered) / Clustered : TE au-dessus -> positif, en dessous -> negatif.
+    Le statut compare l'ecart absolu au seuil (-3 % = MATCH, -5 % = MISMATCH)."""
+    months = [dt.date(2025, m, 1) for m in (1, 2, 3)]
+    clustered = pd.DataFrame([{"Month": m, "Trade Direction": "Export", "Total Value": 100.0} for m in months])
+    te = pd.DataFrame([
+        {"Month": m, "Direction": "Export", "value_usd": v} for m, v in zip(months, (105.0, 97.0, 95.0))
+    ])
+    result = _compare_country(clustered, te, tolerance=0.03).sort_values("Month")
+    got = [(round(p, 6), s) for p, s in zip(result["pct_diff"], result["status"])]
+    assert got == [(0.05, "MISMATCH"), (-0.03, "MATCH"), (-0.05, "MISMATCH")], got
+    print("OK  test_ecart_signe")
+
+
 def test_deux_points_te_meme_mois() -> None:
     """Deux points TE dans le meme mois (provisoire puis definitif, cas Vietnam 2020-08) : le
     dernier est garde, ils ne sont pas additionnes (sinon le mois est double), et le mois est
@@ -126,6 +140,7 @@ def test_deux_points_te_meme_mois() -> None:
 if __name__ == "__main__":
     tests = [
         test_deux_points_te_meme_mois,
+        test_ecart_signe,
         test_serie_mensuelle_detectee,
         test_serie_trimestrielle_rejetee,
         test_mapping_pays,

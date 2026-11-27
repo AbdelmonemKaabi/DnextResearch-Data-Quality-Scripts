@@ -15,6 +15,7 @@ import unicodedata
 import pandas as pd
 import pycountry
 
+from compare_aggregated_sources import with_percent_text
 from snowflake_client import run_query
 from te_scraper import SCRAPE_DELAY_SECONDS, scrape_country_trade_series
 
@@ -221,6 +222,9 @@ def _compare_country(clustered_sub: pd.DataFrame, te_df: pd.DataFrame, tolerance
     """Joint (outer) Clustered et Trading Economics sur (Month, Trade Direction) pour un pays,
     puis calcule pct_diff/status/reason par ligne.
 
+    pct_diff est signe, (TE - Clustered) / Clustered : +0.03 = TE 3 % au-dessus, -0.05 = TE 5 %
+    en dessous. Le statut compare l'ecart absolu au seuil `tolerance`.
+
     Regles (identiques a compare_aggregated_sources.py) : 0=0 -> MATCH ; valeur clustered a 0
     (et TE non nul) -> NON_COMPARABLE ; mois absent d'un cote -> NON_COMPARABLE
     ("sans_correspondance") ; conversion USD TE echouee (value_te_usd NaN) -> NON_COMPARABLE
@@ -293,9 +297,10 @@ def _compare_country(clustered_sub: pd.DataFrame, te_df: pd.DataFrame, tolerance
             statuses.append("NON_COMPARABLE")
             reasons.append("clustered_value_zero")
         else:
-            pct_diff = abs(row["value_te_usd"] - row["value_clustered_usd"]) / abs(row["value_clustered_usd"])
+            # Signe : positif quand Trading Economics est au-dessus (+0.03 = TE 3 % plus haut).
+            pct_diff = (row["value_te_usd"] - row["value_clustered_usd"]) / abs(row["value_clustered_usd"])
             pct_diffs.append(pct_diff)
-            statuses.append("MATCH" if pct_diff <= tolerance else "MISMATCH")
+            statuses.append("MATCH" if abs(pct_diff) <= tolerance else "MISMATCH")
             reasons.append("")
 
     merged["pct_diff"] = pct_diffs
@@ -359,7 +364,7 @@ if __name__ == "__main__":
 
     if all_results:
         combined = pd.concat(all_results, ignore_index=True)
-        combined.to_csv(OUTPUT_FILE, index=False)
+        with_percent_text(combined).to_csv(OUTPUT_FILE, index=False)
         print(f"\nResultat exporte dans {OUTPUT_FILE} ({len(combined)} ligne(s), {len(all_results)} pays)")
 
         print("\n=== Resume ===")

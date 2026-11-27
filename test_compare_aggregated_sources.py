@@ -25,6 +25,8 @@ from compare_aggregated_sources import (
     _count_invalid_chapter_records,
     _find_unrecognized_units,
     compare_aggregated,
+    percent_text,
+    with_percent_text,
 )
 from exchange_rate import (
     FALLBACK_SOURCE_NAME,
@@ -465,6 +467,23 @@ def test_mismatch_gros_ecart_absolu_ne_recoit_pas_le_tag() -> None:
     print("OK  test_mismatch_gros_ecart_absolu_ne_recoit_pas_le_tag")
 
 
+def test_ecart_signe_en_pourcentage() -> None:
+    """pct_diff est signe, (dataset - Clustered) / Clustered : dataset au-dessus -> positif,
+    en dessous -> negatif. Dans le CSV, il est ecrit "+5.00%" / "-50.00%"."""
+    df_snowflake = pd.DataFrame([
+        _row(hs_chapter="22", currency="USD", total_value=105.0, total_quantity=50.0),
+    ])
+    df_clustered = pd.DataFrame([_clustered_row(hs_chapter="22", total_value=100.0, total_quantity=100.0)])
+    row = compare_aggregated(df_snowflake, df_clustered).iloc[0]
+    assert abs(row["pct_diff_value"] - 0.05) < 1e-9 and row["status_value"] == "MISMATCH", row
+    assert abs(row["pct_diff_quantity"] + 0.5) < 1e-9 and row["status_quantity"] == "MISMATCH", row
+    text = with_percent_text(pd.DataFrame([row]))
+    assert (text.iloc[0]["pct_diff_value"], text.iloc[0]["pct_diff_quantity"]) == ("+5.00%", "-50.00%"), text
+    assert [percent_text(v) for v in (0.002567, -0.03, 0.0, None)] == ["+0.26%", "-3.00%", "0.00%", ""]
+    assert percent_text(0.9, signed=False) == "90.00%"
+    print("OK  test_ecart_signe_en_pourcentage")
+
+
 def test_get_mop_to_usd_rate_coherente() -> None:
     """Appel reseau reel (Frankfurter, via HKD) : verifie que get_mop_to_usd_rate(2026, 1)
     renvoie un taux MOP->USD coherent (MOP/USD tourne autour de 8, donc rate ~ 1/8 = 0.125)
@@ -757,6 +776,7 @@ if __name__ == "__main__":
         test_devise_a_parite_fixe_convertie_sans_reseau,
         test_source_de_secours_si_frankfurter_ne_connait_pas_la_devise,
         test_echec_source_de_secours_memorise,
+        test_ecart_signe_en_pourcentage,
         test_get_mop_to_usd_rate_coherente,
     ]
     failures = []

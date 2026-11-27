@@ -34,6 +34,7 @@ import time
 
 import pandas as pd
 
+from compare_aggregated_sources import with_percent_text
 from compare_clustered_vs_tradingeconomics import TOLERANCE, _compare_country, resolve_te_slug
 from exchange_rate import USD_PEGGED_RATES
 from snowflake_client import run_query
@@ -246,11 +247,11 @@ def main() -> None:
             summary_rows.append({"DataSource": ds, "Country": code, "TE_Slug": "", "status": "non_mappe", "note": reason})
 
     summary = pd.DataFrame(summary_rows)
-    summary.to_csv(summary_file, index=False)
+    with_percent_text(summary).to_csv(summary_file, index=False)
     print(f"\nResume par couple exporte dans {summary_file} ({len(summary)} ligne(s))")
     if all_results:
         combined = pd.concat(all_results, ignore_index=True)
-        combined.to_csv(output_file, index=False)
+        with_percent_text(combined).to_csv(output_file, index=False)
         print(f"Detail mensuel exporte dans {output_file} ({len(combined)} ligne(s))")
 
         print("\n=== Resume ===")

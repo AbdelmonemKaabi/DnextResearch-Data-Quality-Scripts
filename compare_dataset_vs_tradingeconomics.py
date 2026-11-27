@@ -56,11 +56,14 @@ import pandas as pd
 import pycountry
 
 from compare_aggregated_sources import (
+    EXCEL_SIGNED_PERCENT_FORMAT,
     TRADE_DIRECTION_ALIASES,
     _SAFE_DATASET_NAME_RE,
     _convert_snowflake_row_to_usd,
     _list_all_datasets,
     _resolve_datasets,
+    percent_text,
+    with_percent_text,
 )
 from compare_all_clustered_vs_tradingeconomics import (
     COMPARED_FLOWS,
@@ -330,6 +333,8 @@ def currency_inventory(raw: pd.DataFrame) -> dict[str, int]:
     portent une valeur non nulle, de la plus frequente a la moins frequente."""
     df = _export_import_only(raw)
     df = df[df["Total Value"].fillna(0) != 0]
+    if df.empty:  # ex: aucune donnee sur la periode demandee (groupby.apply rendrait un DataFrame vide)
+        return {}
     counts = df.groupby("Currency")[["Month", "Trade Direction"]].apply(lambda g: len(g.drop_duplicates()))
     return {str(c): int(n) for c, n in counts.sort_values(ascending=False).items()}
 
@@ -440,6 +445,8 @@ def compare_dataset(
         raw = _fetch_dataset_totals(dataset, months[0], end)
     else:
         raw = _fetch_dataset_totals(dataset)
+    if raw.empty:
+        return None, {**base, "status": "aucune_donnee_periode", "notes": "aucune valeur dans le dataset sur la periode demandee"}
     raw["Month"] = pd.to_datetime(raw["Month"]).dt.date
     inventory = currency_inventory(raw)
     base["dataset_currencies"] = ", ".join(f"{c} ({n})" for c, n in inventory.items())
@@ -494,8 +501,9 @@ def save_excel(result: pd.DataFrame, summary: pd.DataFrame, path: str) -> None:
     from openpyxl.utils import get_column_letter
 
     number_formats = {
-        "value_dataset": "#,##0", "value_te": "#,##0", "ratio_te_dataset": "0.000", "pct_diff": "0.00%",
-        "match_pct": "0.00%", "median_signed_gap": "0.00%", "median_abs_gap": "0.00%", "max_abs_gap": "0.00%",
+        "value_dataset": "#,##0", "value_te": "#,##0", "ratio_te_dataset": "0.000",
+        "pct_diff": EXCEL_SIGNED_PERCENT_FORMAT, "median_signed_gap": EXCEL_SIGNED_PERCENT_FORMAT,
+        "match_pct": "0.00%", "median_abs_gap": "0.00%", "max_abs_gap": "0.00%",
     }
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         for name, df in (("Resume", summary), ("Detail", result)):
@@ -565,7 +573,8 @@ def main() -> None:
         if result is not None:
             all_results.append(result)
             counts = result["status"].value_counts().to_dict()
-            print(f"  {len(result)} mois/sens compares ({summary['compared_in']}) : {counts}, ecart median signe {summary['median_signed_gap']}")
+            print(f"  {len(result)} mois/sens compares ({summary['compared_in']}) : {counts}, "
+                  f"ecart median TE vs dataset {percent_text(summary['median_signed_gap'])}")
             if summary["notes"]:
                 print("  A verifier : " + summary["notes"].replace(" | ", "\n                "))
         else:
@@ -573,10 +582,10 @@ def main() -> None:
 
     summary_df = pd.DataFrame(summary_rows)
     result_df = pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame()
-    summary_df.to_csv(summary_file, index=False)
+    with_percent_text(summary_df).to_csv(summary_file, index=False)
     print(f"\nResume exporte dans {summary_file}")
     if all_results:
-        result_df.to_csv(output_file, index=False)
+        with_percent_text(result_df).to_csv(output_file, index=False)
         print(f"Detail mensuel exporte dans {output_file}")
     save_excel(result_df, summary_df, excel_file)
     print(f"Classeur Excel (feuilles Resume et Detail) : {excel_file}")
