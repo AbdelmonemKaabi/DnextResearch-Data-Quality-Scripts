@@ -42,6 +42,10 @@ python compare_aggregated_sources.py
 
 Un dataset en échec (table Snowflake introuvable, etc.) est loggé et ignoré, sans bloquer les autres. Résultat combiné écrit dans `aggregated_comparison_result.csv` (colonne `Dataset` en premier), résumé affiché dans le terminal pour chaque dataset.
 
+## Tolérance et écart (`pct_diff`)
+
+Pour toutes les comparaisons avec Trading Economics, `pct_diff` = |TE − valeur comparée| / valeur comparée : un écart absolu, positif que Trading Economics soit au-dessus ou en dessous. Un mois est `MATCH` si `pct_diff` ≤ `TOLERANCE` (15 %, dans `compare_clustered_vs_tradingeconomics.py`), sinon `MISMATCH`. Dans les CSV, `pct_diff` est écrit en pourcentage (`16.11%`, lu comme un pourcentage par Excel) ; dans les fichiers Excel, il a le format `0.00%`.
+
 ## Comparer un dataset source à Trading Economics
 
 ```

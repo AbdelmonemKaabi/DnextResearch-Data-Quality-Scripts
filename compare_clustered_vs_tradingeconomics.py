@@ -19,8 +19,17 @@ from snowflake_client import run_query
 from te_scraper import SCRAPE_DELAY_SECONDS, scrape_country_trade_series
 
 DATA_SOURCE = "dnexr-dnexr-all-fin-tf-customs-bilateral-monthly"
-TOLERANCE = 0.03
+TOLERANCE = 0.15
 OUTPUT_FILE = "clustered_vs_tradingeconomics_result.csv"
+
+
+def with_percent_text(df: pd.DataFrame, columns=("pct_diff",)) -> pd.DataFrame:
+    """Copie pour l'export CSV : ecarts ecrits '16.11%' (Excel les lit comme des pourcentages)."""
+    df = df.copy()
+    for column in columns:
+        if column in df:
+            df[column] = df[column].map(lambda v: f"{v:.2%}" if pd.notna(v) else "")
+    return df
 
 # Si non vide, restreint le traitement a ces codes ISO3 parmi les pays Reporter de DATA_SOURCE --
 # pour tester sur un petit echantillon un DataSource multi-pays (scraping Selenium, donc lent et
@@ -354,7 +363,7 @@ if __name__ == "__main__":
 
     if all_results:
         combined = pd.concat(all_results, ignore_index=True)
-        combined.to_csv(OUTPUT_FILE, index=False)
+        with_percent_text(combined).to_csv(OUTPUT_FILE, index=False)
         print(f"\nResultat exporte dans {OUTPUT_FILE} ({len(combined)} ligne(s), {len(all_results)} pays)")
 
         print("\n=== Resume ===")

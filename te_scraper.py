@@ -225,7 +225,6 @@ def scrape_highcharts_series(page_path: str, headless: bool = True, wait_seconds
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
-    from webdriver_manager.chrome import ChromeDriverManager
 
     url = f"https://tradingeconomics.com/{page_path}"
 
@@ -239,7 +238,17 @@ def scrape_highcharts_series(page_path: str, headless: bool = True, wait_seconds
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
 
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    # In Docker (Automation data-quality checks) the system Chromium and its driver are used;
+    # elsewhere webdriver-manager downloads the driver matching the local Google Chrome.
+    chromedriver = os.getenv("CHROMEDRIVER_PATH")
+    if chromedriver:
+        options.binary_location = os.getenv("CHROME_BINARY", "/usr/bin/chromium")
+        service = Service(executable_path=chromedriver)
+    else:
+        from webdriver_manager.chrome import ChromeDriverManager
+
+        service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
     try:
         driver.get(url)
         time.sleep(wait_seconds)  # let the chart finish rendering/loading its data

@@ -69,7 +69,7 @@ from compare_all_clustered_vs_tradingeconomics import (
     _load_or_scrape_te,
     _summarize_pair,
 )
-from compare_clustered_vs_tradingeconomics import COUNTRY_CODES_QUERY, TOLERANCE, _compare_country, resolve_te_slug
+from compare_clustered_vs_tradingeconomics import COUNTRY_CODES_QUERY, TOLERANCE, _compare_country, resolve_te_slug, with_percent_text
 from snowflake_client import run_query
 
 
@@ -576,7 +576,7 @@ def main() -> None:
     summary_df.to_csv(summary_file, index=False)
     print(f"\nResume exporte dans {summary_file}")
     if all_results:
-        result_df.to_csv(output_file, index=False)
+        with_percent_text(result_df).to_csv(output_file, index=False)
         print(f"Detail mensuel exporte dans {output_file}")
     save_excel(result_df, summary_df, excel_file)
     print(f"Classeur Excel (feuilles Resume et Detail) : {excel_file}")

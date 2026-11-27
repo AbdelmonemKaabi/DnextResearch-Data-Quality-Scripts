@@ -31,7 +31,7 @@ import time
 
 import pandas as pd
 
-from compare_clustered_vs_tradingeconomics import TOLERANCE, _compare_country, resolve_te_slug
+from compare_clustered_vs_tradingeconomics import TOLERANCE, _compare_country, resolve_te_slug, with_percent_text
 from exchange_rate import USD_PEGGED_RATES
 from snowflake_client import run_query
 from te_scraper import SCRAPE_DELAY_SECONDS, scrape_country_trade_series
@@ -216,7 +216,7 @@ def main() -> None:
     print(f"\nResume par couple exporte dans {SUMMARY_FILE} ({len(summary)} ligne(s))")
     if all_results:
         combined = pd.concat(all_results, ignore_index=True)
-        combined.to_csv(OUTPUT_FILE, index=False)
+        with_percent_text(combined).to_csv(OUTPUT_FILE, index=False)
         print(f"Detail mensuel exporte dans {OUTPUT_FILE} ({len(combined)} ligne(s))")
 
         print("\n=== Resume ===")
